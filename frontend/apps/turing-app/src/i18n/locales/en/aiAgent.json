@@ -1,0 +1,148 @@
+{
+  "aiAgent": {
+    "title": "AI Agent",
+    "blankTitle": "You don't seem to have any AI agent.",
+    "blankDescription": "Create a new AI agent to orchestrate LLM instances and MCP servers.",
+    "newInstance": "New AI Agent",
+    "deleted": "The {{name}} AI Agent was deleted",
+    "notDeleted": "The {{name}} AI Agent was not deleted",
+    "nav": {
+      "settings": "Settings",
+      "systemPrompt": "System Prompt",
+      "languageModels": "Language Models",
+      "personas": "Personas",
+      "nativeTools": "Native Tools",
+      "mcpServers": "MCP Servers",
+      "customTools": "Custom Tools",
+      "intents": "Intents",
+      "slots": "Slots",
+      "chat": "Chat",
+      "chatFlow": "Chat Flow",
+      "analyticsIntent": "Analytics Intent",
+      "history": "History"
+    },
+    "persona": {
+      "title": "Personas",
+      "description": "Allowed voices for this agent. Pick the catalog and one default; chat flows can switch the active persona mid-conversation."
+    },
+    "slot": {
+      "title": "Slots",
+      "description": "Typed-variable catalogue for this agent. Chat-flow nodes pick from these instead of free-text identifiers so captured values land in a stable schema.",
+      "add": "Add slot",
+      "edit": "Edit slot",
+      "delete": "Delete slot",
+      "addTitle": "Add slot",
+      "editTitle": "Edit slot",
+      "dialogDescription": "Slots are the typed variables this agent can write into. Pick a name and a primitive type.",
+      "deleteTitle": "Delete slot",
+      "deleteConfirm": "Are you sure you want to delete the slot \"{{name}}\"? Chat-flow nodes referencing it will lose their binding.",
+      "blankTitle": "No slots defined yet",
+      "blankDescription": "Create the typed variables your chat flows will collect — name, address, age, etc. Each slot has a name and a primitive type.",
+      "namePlaceholder": "e.g. visitor_name",
+      "nameHint": "Letters, digits and underscores; must start with a letter or underscore.",
+      "descriptionPlaceholder": "Optional — what this slot captures and how flows should use it.",
+      "created": "Slot \"{{name}}\" created",
+      "updated": "Slot \"{{name}}\" updated",
+      "deleted": "Slot \"{{name}}\" deleted",
+      "saveFailed": "Failed to save slot",
+      "deleteFailed": "Failed to delete slot",
+      "fields": {
+        "name": "Name",
+        "type": "Type",
+        "description": "Description",
+        "actions": "Actions"
+      },
+      "types": {
+        "STRING": "String",
+        "INTEGER": "Integer",
+        "BOOLEAN": "Boolean",
+        "FLOAT": "Float",
+        "TEXT": "Text",
+        "IMAGE": "Image",
+        "AUDIO": "Audio",
+        "FILE": "File"
+      },
+      "errors": {
+        "nameRequired": "Name is required",
+        "nameInvalid": "Name must start with a letter or underscore and contain only letters, digits and underscores",
+        "nameTaken": "A slot with this name already exists for this agent"
+      }
+    },
+    "history": {
+      "title": "History",
+      "flowLabel": "Flow",
+      "flowPlaceholder": "Select a flow",
+      "totalSubmissions": "{{count}} submissions",
+      "empty": "No completed submissions for this flow yet.",
+      "columns": {
+        "conversation": "Conversation",
+        "completedAt": "Completed at",
+        "user": "User",
+        "status": "Status"
+      },
+      "status": {
+        "completed": "Completed",
+        "abandoned": "Abandoned"
+      }
+    },
+    "settings": {
+      "title": "Settings",
+      "description": "General information and status."
+    },
+    "systemPrompt": {
+      "title": "System Prompt",
+      "description": "The behavioral contract sent to the model on every turn — and a live preview of how it is assembled.",
+      "origin": {
+        "PERSONA": "Persona",
+        "AGENT": "Agent prompt",
+        "MCP": "MCP server",
+        "FLOW": "Chat flow",
+        "FEW_SHOT": "Few-shot",
+        "RAG": "RAG override"
+      },
+      "preview": {
+        "title": "Live Preview",
+        "description": "Everything below is concatenated into one system message before it reaches the model. Each block is tagged with where it comes from.",
+        "runtimeOnly": "runtime only",
+        "noFixedText": "No fixed text — depends on the live conversation.",
+        "flowLabel": "Preview with chat flow",
+        "flowNone": "No flow (plain turn)",
+        "flowDisabled": "disabled"
+      },
+      "warnings": {
+        "title": "Conflict check",
+        "description": "Heuristic checks run automatically. Run the deep check to have the LLM look for subtler contradictions that could break a reply.",
+        "count": "{{count}} issue(s) found",
+        "deepCheck": "Deep check (LLM)",
+        "clean": "No conflicts detected. Run the deep check for a thorough LLM review."
+      },
+      "finalPrompt": {
+        "title": "Final prompt",
+        "description": "The complete system message the model receives for the previewed turn, including the tool definitions sent alongside it.",
+        "preview": "Preview",
+        "raw": "Raw",
+        "copy": "Copy",
+        "copied": "Copied to clipboard",
+        "copyFailed": "Could not copy",
+        "toolsHeading": "Tools available to the model",
+        "toolsNote": "_Provided to the model as function/tool schemas (not literal prompt text)._"
+      }
+    },
+    "llm": {
+      "title": "Language Models",
+      "description": "Select one or more LLM instances for this agent."
+    },
+    "tools": {
+      "title": "Native Tools",
+      "description": "Select which native tool callings are available to this agent."
+    },
+    "mcp": {
+      "title": "MCP Servers",
+      "description": "Select one or more MCP servers for tool access."
+    },
+    "customTool": {
+      "title": "Custom Tools",
+      "description": "Select which Groovy-backed custom tools are available to this agent."
+    }
+  }
+}

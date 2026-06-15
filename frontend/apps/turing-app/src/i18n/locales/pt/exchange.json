@@ -1,0 +1,41 @@
+{
+  "exchange": {
+    "dropFile": "Solte seu arquivo aqui",
+    "dragDrop": "Arraste e solte seu arquivo de exportação",
+    "browseFiles": "procurar arquivos",
+    "selectZip": "para selecionar um arquivo ZIP",
+    "onlyZip": "Apenas arquivos .zip exportados do Turing são suportados",
+    "importing": "Importando...",
+    "uploaded": "enviado",
+    "importCompleted": "Importação Concluída",
+    "redirecting": "Redirecionando para Navegação Semântica...",
+    "importFailed": "Falha na Importação",
+    "invalidFile": "Selecione um arquivo ZIP válido.",
+    "invalidType": "Tipo de arquivo inválido. Apenas arquivos ZIP são aceitos.",
+    "importSuccess": "Importação concluída com sucesso!",
+    "importError": "Ocorreu um erro durante a importação.",
+    "importFailedMsg": "Falha na importação: {{message}}",
+    "contentDetected": "Conteúdo Indexado Detectado",
+    "contentDetectedDescription": "Este arquivo de exportação contém conteúdo indexado. Deseja importar o conteúdo junto com a configuração do site?",
+    "importSiteOnly": "Apenas Site",
+    "importWithContent": "Importar com Conteúdo",
+    "indexingContent": "Indexando conteúdo...",
+    "importOptions": {
+      "title": "Importar Pacote",
+      "description": "Encontramos dados adicionais nesta exportação. Escolha o que importar.",
+      "configAlwaysIncluded": "Configuração, campos, idiomas e spotlights são sempre importados.",
+      "conflictWarningTitle": "{{count}} item já existe com o mesmo ID",
+      "conflictWarningTitle_other": "{{count}} itens já existem com o mesmo ID",
+      "overwriteConfig": "Sobrescrever itens existentes",
+      "overwriteConfigOn": "Substituir os itens existentes pelos deste ZIP. Clique para desativar.",
+      "overwriteConfigOff": "Manter os itens existentes intactos. Clique para sobrescrever.",
+      "includeContent": "Conteúdo indexado",
+      "includeContentDescription": "Re-indexar todos os documentos exportados. Recomendado para migração completa de ambientes.",
+      "includeTemplate": "Template de busca (SPA)",
+      "includeTemplateDescription": "Implantar a aplicação SPA \"{{name}}\" em Páginas e usá-la como interface de busca.",
+      "templateRequiresStorage": "O armazenamento deve estar habilitado (Filesystem ou MinIO) para importar o template.",
+      "cancel": "Cancelar",
+      "importButton": "Importar"
+    }
+  }
+}

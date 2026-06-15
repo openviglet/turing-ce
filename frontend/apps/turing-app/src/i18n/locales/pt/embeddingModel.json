@@ -1,0 +1,9 @@
+{
+  "embeddingModel": {
+    "title": "Modelo Vetorial",
+    "blankTitle": "Você ainda não possui nenhum modelo vetorial.",
+    "blankDescription": "Crie um novo modelo vetorial para usar com navegação semântica e armazenamentos vetoriais.",
+    "newInstance": "Novo Modelo Vetorial",
+    "newEmbeddingModel": "Novo Modelo Vetorial"
+  }
+}

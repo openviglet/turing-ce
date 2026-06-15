@@ -1,0 +1,37 @@
+{
+  // SonarLint integration
+  "sonarlint.connectedMode.project": {
+    "connectionId": "viglet",
+    "projectKey": "viglet_turing"
+  },
+
+  // Java Language Server memory tuning
+  "java.jdt.ls.vmargs": "-Xms4096m -Xmx8192m -XX:+UseG1GC -XX:+UseStringDeduplication",
+  "java.format.settings.url": "./eclipse-java-style.xml",
+  "java.format.settings.profile": "GoogleStyle",
+  // Disable automatic builds to reduce CPU usage
+  "java.autobuild.enabled": false,
+
+  // Improve editor responsiveness and clarity
+  "editor.minimap.enabled": false,
+  "editor.renderWhitespace": "boundary",
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+
+  // Optional: Hide clutter in file explorer
+  "files.exclude": {
+    "**/target": true,
+    "**/.classpath": true,
+    "**/.project": true,
+    "**/.settings": true
+  },
+  // Postman extension tweak
+  "postman.settings.dotenv-detection-notification-visibility": false,
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "java.compile.nullAnalysis.mode": "automatic",
+  "java.debug.settings.onBuildFailureProceed": true,
+  "java.test.defaultConfig": "run",
+  "markdown.validate.enabled": true
+}

@@ -1,0 +1,32 @@
+turing-installer
+.bloop
+# .git is NOT excluded — git-commit-id-plugin needs it for MANIFEST.MF versioning
+.github
+.gradle
+.metals
+.vscode
+.idea
+activemq-data
+bin
+build
+containers
+gradle
+img
+volumes
+k8s
+
+# Build outputs (rebuilt inside the image)
+**/target
+**/dist
+**/build
+**/storybook-static
+**/node_modules
+
+# Local runtime state that must never be baked in
+store
+models
+logs
+*.log
+
+# Marketplace examples are not part of turing-app runtime
+turing-marketplace

@@ -1,0 +1,148 @@
+{
+  "aiAgent": {
+    "title": "Agente de IA",
+    "blankTitle": "Você ainda não possui nenhum agente de IA.",
+    "blankDescription": "Crie um novo agente de IA para orquestrar instâncias de LLM e servidores MCP.",
+    "newInstance": "Novo Agente de IA",
+    "deleted": "O Agente de IA {{name}} foi excluído",
+    "notDeleted": "O Agente de IA {{name}} não foi excluído",
+    "nav": {
+      "settings": "Configurações",
+      "systemPrompt": "Prompt do Sistema",
+      "languageModels": "Modelos de Linguagem",
+      "personas": "Personas",
+      "nativeTools": "Ferramentas Nativas",
+      "mcpServers": "Servidores MCP",
+      "customTools": "Ferramentas Customizadas",
+      "intents": "Intents",
+      "slots": "Slots",
+      "chat": "Chat",
+      "chatFlow": "Chat Flow",
+      "analyticsIntent": "Intent de Analytics",
+      "history": "Histórico"
+    },
+    "persona": {
+      "title": "Personas",
+      "description": "Vozes permitidas para este agent. Escolha o catálogo e uma padrão; chat flows podem trocar a persona ativa durante a conversa."
+    },
+    "slot": {
+      "title": "Slots",
+      "description": "Catálogo de variáveis tipadas deste agente. Os nodes do chat flow usam esses slots em vez de identificadores livres, garantindo que os valores coletados sigam um schema estável.",
+      "add": "Adicionar slot",
+      "edit": "Editar slot",
+      "delete": "Excluir slot",
+      "addTitle": "Adicionar slot",
+      "editTitle": "Editar slot",
+      "dialogDescription": "Slots são as variáveis tipadas que este agente pode preencher. Defina um nome e um tipo primitivo.",
+      "deleteTitle": "Excluir slot",
+      "deleteConfirm": "Tem certeza que deseja excluir o slot \"{{name}}\"? Os nodes do chat flow que o referenciam perderão o vínculo.",
+      "blankTitle": "Nenhum slot definido ainda",
+      "blankDescription": "Crie as variáveis tipadas que seus chat flows vão coletar — nome, endereço, idade etc. Cada slot tem um nome e um tipo primitivo.",
+      "namePlaceholder": "ex.: nome_visitante",
+      "nameHint": "Letras, dígitos e underscores; deve começar com letra ou underscore.",
+      "descriptionPlaceholder": "Opcional — o que este slot captura e como os flows devem usá-lo.",
+      "created": "Slot \"{{name}}\" criado",
+      "updated": "Slot \"{{name}}\" atualizado",
+      "deleted": "Slot \"{{name}}\" excluído",
+      "saveFailed": "Falha ao salvar slot",
+      "deleteFailed": "Falha ao excluir slot",
+      "fields": {
+        "name": "Nome",
+        "type": "Tipo",
+        "description": "Descrição",
+        "actions": "Ações"
+      },
+      "types": {
+        "STRING": "Texto curto",
+        "INTEGER": "Inteiro",
+        "BOOLEAN": "Booleano",
+        "FLOAT": "Decimal",
+        "TEXT": "Texto longo",
+        "IMAGE": "Imagem",
+        "AUDIO": "Áudio",
+        "FILE": "Arquivo"
+      },
+      "errors": {
+        "nameRequired": "Nome é obrigatório",
+        "nameInvalid": "O nome deve começar com letra ou underscore e conter apenas letras, dígitos e underscores",
+        "nameTaken": "Já existe um slot com este nome neste agente"
+      }
+    },
+    "history": {
+      "title": "Histórico",
+      "flowLabel": "Fluxo",
+      "flowPlaceholder": "Selecione um fluxo",
+      "totalSubmissions": "{{count}} submissões",
+      "empty": "Ainda não há submissões concluídas para este fluxo.",
+      "columns": {
+        "conversation": "Conversa",
+        "completedAt": "Concluído em",
+        "user": "Usuário",
+        "status": "Status"
+      },
+      "status": {
+        "completed": "Concluído",
+        "abandoned": "Abandonado"
+      }
+    },
+    "settings": {
+      "title": "Configurações",
+      "description": "Informações gerais e status."
+    },
+    "systemPrompt": {
+      "title": "Prompt do Sistema",
+      "description": "O contrato de comportamento enviado ao modelo a cada turno — e uma prévia ao vivo de como ele é montado.",
+      "origin": {
+        "PERSONA": "Persona",
+        "AGENT": "Prompt do agente",
+        "MCP": "Servidor MCP",
+        "FLOW": "Chat flow",
+        "FEW_SHOT": "Few-shot",
+        "RAG": "Override de RAG"
+      },
+      "preview": {
+        "title": "Prévia ao Vivo",
+        "description": "Tudo abaixo é concatenado em uma única mensagem de sistema antes de chegar ao modelo. Cada bloco é marcado com sua origem.",
+        "runtimeOnly": "só em runtime",
+        "noFixedText": "Sem texto fixo — depende da conversa ao vivo.",
+        "flowLabel": "Pré-visualizar com chat flow",
+        "flowNone": "Sem flow (turno simples)",
+        "flowDisabled": "desabilitado"
+      },
+      "warnings": {
+        "title": "Checagem de conflitos",
+        "description": "Checagens heurísticas rodam automaticamente. Rode a checagem profunda para o LLM procurar contradições mais sutis que possam quebrar uma resposta.",
+        "count": "{{count}} problema(s) encontrado(s)",
+        "deepCheck": "Checagem profunda (LLM)",
+        "clean": "Nenhum conflito detectado. Rode a checagem profunda para uma revisão completa pelo LLM."
+      },
+      "finalPrompt": {
+        "title": "Prompt final",
+        "description": "A mensagem de sistema completa que o modelo recebe no turno pré-visualizado, incluindo as definições de ferramentas enviadas junto.",
+        "preview": "Prévia",
+        "raw": "Texto",
+        "copy": "Copiar",
+        "copied": "Copiado para a área de transferência",
+        "copyFailed": "Não foi possível copiar",
+        "toolsHeading": "Ferramentas disponíveis ao modelo",
+        "toolsNote": "_Fornecidas ao modelo como schemas de função/ferramenta (não como texto literal do prompt)._"
+      }
+    },
+    "llm": {
+      "title": "Modelos de Linguagem",
+      "description": "Selecione uma ou mais instâncias de LLM para este agente."
+    },
+    "tools": {
+      "title": "Ferramentas Nativas",
+      "description": "Selecione quais chamadas de ferramentas nativas estão disponíveis para este agente."
+    },
+    "mcp": {
+      "title": "Servidores MCP",
+      "description": "Selecione um ou mais servidores MCP para acesso a ferramentas."
+    },
+    "customTool": {
+      "title": "Ferramentas Customizadas",
+      "description": "Selecione quais ferramentas customizadas (Groovy) estão disponíveis para este agente."
+    }
+  }
+}

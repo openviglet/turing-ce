@@ -1,0 +1,21 @@
+{
+  "common": {
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "close": "Close",
+    "delete": "Delete",
+    "deleting": "Deleting…",
+    "new": "New",
+    "loading": "Loading...",
+    "actions": "Actions",
+    "refresh": "Refresh",
+    "goBack": "Go back",
+    "tryAgain": "Try again",
+    "errorLoading": "Error while loading data",
+    "openNavigation": "Open navigation",
+    "connectionError": "Connection error or timeout while fetching {{resource}}.",
+    "yes": "Yes",
+    "no": "No"
+  }
+}

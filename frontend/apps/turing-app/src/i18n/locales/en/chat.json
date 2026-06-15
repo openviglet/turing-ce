@@ -1,0 +1,93 @@
+{
+  "chat": {
+    "askMeAnything": "Ask me anything",
+    "scheduleAgent": {
+      "waiting": "Waiting for routine…",
+      "waiting_one": "Waiting for routine…",
+      "waiting_other": "Waiting for {{count}} routines…"
+    },
+    "noDefaultLlm": "No default LLM configured",
+    "howCanIHelp": "How can I help you today?",
+    "sessions": "Sessions",
+    "noSavedSessions": "No saved sessions",
+    "msgs": "msgs",
+    "deleteSession": "Delete session",
+    "selectModel": "Select a model...",
+    "newChat": "New Chat",
+    "chatTab": "Chat",
+    "semanticTab": "Semantic",
+    "semanticTabShort": "SN",
+    "dropFilesHere": "Drop files here",
+    "attachFiles": "Attach files",
+    "removeFile": "Remove {{name}}",
+    "copyToClipboard": "Copy to clipboard",
+    "you": "You",
+    "sources": {
+      "heading": "Sources",
+      "why": "Why did you say this?",
+      "open": "Open source",
+      "passage": "Passage",
+      "keywordOnly": "keyword match",
+      "confidenceHigh": "High confidence",
+      "confidenceMedium": "Medium confidence",
+      "confidenceLow": "Low confidence"
+    },
+    "selectModelToStart": "Select a model to start...",
+    "selectModelToChat": "Select a language model to start chatting.",
+    "selectModelToExplore": "Select a language model to start exploring.",
+    "selectModelToStartAgent": "Select a language model to start.",
+    "askAboutContent": "Ask questions about your indexed content.",
+    "askAnythingAgent": "Ask anything this agent can help with.",
+    "askAboutSemantic": "Ask about your semantic navigation content...",
+    "askAgent": "Ask {{agent}}...",
+    "usingModel": "Using {{model}} ({{vendor}})",
+    "usingModelForSN": "Ask questions about your indexed content. Using {{model}}.",
+    "usingModelForAgent": "Using {{model}}. Ask anything this agent can help with.",
+    "noLlmAvailable": "No Language Model Available",
+    "noLlmDescription": "To use the chat, create and enable at least one LLM instance.",
+    "createLlmInstance": "Create LLM Instance",
+    "noAgentAvailable": "No AI Agent Available",
+    "noAgentDescription": "To use the chat, register and enable at least one AI agent.",
+    "createAiAgent": "Create AI Agent",
+    "failedResponse": "Failed to get a response. Please check your LLM configuration.",
+    "failedAgentResponse": "Failed to get a response from {{agent}}.",
+    "contextCompacted": "Context compacted successfully.",
+    "failedCompact": "Failed to compact context.",
+    "contextCompactedLabel": "**[Context compacted]**",
+    "sessionInfo": {
+      "button": "Session info",
+      "title": "Session info",
+      "description": "Details about the current conversation. Slot values refresh while this panel is open.",
+      "conversationId": "Conversation ID",
+      "noActiveSession": "No active session. Send a message to start one.",
+      "copied": "Conversation ID copied to clipboard",
+      "export": "Export conversation",
+      "exportSuccess": "Conversation exported",
+      "exportError": "Failed to export this conversation.",
+      "slots": "Slots",
+      "slotsEmpty": "No slots have been captured yet for this conversation.",
+      "slotsError": "Failed to load slot values for this conversation.",
+      "auditTitle": "Slot write timeline",
+      "auditEmpty": "No slot writes have been recorded for this conversation.",
+      "auditError": "Failed to load slot audit trail.",
+      "auditSource": {
+        "NODE": "Node",
+        "TOOL": "Tool",
+        "ENDPOINT": "Endpoint",
+        "EXTRACT": "Extract"
+      },
+      "auditFromTo": "{{from}} → {{to}}",
+      "auditEmptyValue": "(empty)",
+      "auditCleared": "(cleared)",
+      "workspace": "Workspace files",
+      "workspaceEmpty": "No files have been built for this conversation yet.",
+      "workspaceError": "Workspace stream unavailable for this conversation."
+    },
+    "skill": {
+      "selector": {
+        "placeholder": "Skill mode",
+        "auto": "All skills (auto)"
+      }
+    }
+  }
+}

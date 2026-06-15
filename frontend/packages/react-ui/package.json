@@ -1,0 +1,170 @@
+{
+  "name": "@viglet/turing-react-ui",
+  "version": "2026.3.1",
+  "description": "Headless React UI primitives for Viglet Turing ES — design-agnostic chat / rich-content components (e.g. TuringHtmlSandbox) shared across the admin console and viglet.com. No API or axios dependency; skin via classNames / labels / icons.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "sideEffects": false,
+  "files": ["dist/**/*"],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./TuringHtmlSandbox": {
+      "types": "./dist/TuringHtmlSandbox.d.ts",
+      "import": "./dist/TuringHtmlSandbox.js",
+      "default": "./dist/TuringHtmlSandbox.js"
+    },
+    "./TuringRichContent": {
+      "types": "./dist/TuringRichContent.d.ts",
+      "import": "./dist/TuringRichContent.js",
+      "default": "./dist/TuringRichContent.js"
+    },
+    "./TuringMarkdown": {
+      "types": "./dist/TuringMarkdown.d.ts",
+      "import": "./dist/TuringMarkdown.js",
+      "default": "./dist/TuringMarkdown.js"
+    },
+    "./TuringD2Diagram": {
+      "types": "./dist/TuringD2Diagram.d.ts",
+      "import": "./dist/TuringD2Diagram.js",
+      "default": "./dist/TuringD2Diagram.js"
+    },
+    "./TuringCopyButton": {
+      "types": "./dist/TuringCopyButton.d.ts",
+      "import": "./dist/TuringCopyButton.js",
+      "default": "./dist/TuringCopyButton.js"
+    },
+    "./TuringThinkingDots": {
+      "types": "./dist/TuringThinkingDots.d.ts",
+      "import": "./dist/TuringThinkingDots.js",
+      "default": "./dist/TuringThinkingDots.js"
+    },
+    "./TuringCodeBlock": {
+      "types": "./dist/TuringCodeBlock.d.ts",
+      "import": "./dist/TuringCodeBlock.js",
+      "default": "./dist/TuringCodeBlock.js"
+    },
+    "./TuringChatMessage": {
+      "types": "./dist/TuringChatMessage.d.ts",
+      "import": "./dist/TuringChatMessage.js",
+      "default": "./dist/TuringChatMessage.js"
+    },
+    "./TuringSourceChips": {
+      "types": "./dist/TuringSourceChips.d.ts",
+      "import": "./dist/TuringSourceChips.js",
+      "default": "./dist/TuringSourceChips.js"
+    },
+    "./TuringSearchBar": {
+      "types": "./dist/TuringSearchBar.d.ts",
+      "import": "./dist/TuringSearchBar.js",
+      "default": "./dist/TuringSearchBar.js"
+    },
+    "./TuringResultList": {
+      "types": "./dist/TuringResultList.d.ts",
+      "import": "./dist/TuringResultList.js",
+      "default": "./dist/TuringResultList.js"
+    },
+    "./TuringPagination": {
+      "types": "./dist/TuringPagination.d.ts",
+      "import": "./dist/TuringPagination.js",
+      "default": "./dist/TuringPagination.js"
+    },
+    "./TuringSearchFieldView": {
+      "types": "./dist/TuringSearchFieldView.d.ts",
+      "import": "./dist/TuringSearchFieldView.js",
+      "default": "./dist/TuringSearchFieldView.js"
+    },
+    "./TuringWorkspacePanelView": {
+      "types": "./dist/TuringWorkspacePanelView.d.ts",
+      "import": "./dist/TuringWorkspacePanelView.js",
+      "default": "./dist/TuringWorkspacePanelView.js"
+    },
+    "./styles.css": "./dist/styles/turing-ui.css",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc && node copy-assets.mjs",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "size": "node ../../scripts/check-size.mjs",
+    "storybook": "storybook dev -p 6007",
+    "build-storybook": "storybook build",
+    "prepublishOnly": "npm run build && npm run size"
+  },
+  "peerDependencies": {
+    "react": "^18.0.0 || ^19.0.0",
+    "react-dom": "^18.0.0 || ^19.0.0",
+    "react-markdown": "^9.0.0 || ^10.0.0",
+    "@terrastruct/d2": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "react-markdown": {
+      "optional": true
+    },
+    "@terrastruct/d2": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@storybook/addon-a11y": "10.4.2",
+    "@storybook/addon-docs": "^10.4.2",
+    "@storybook/addon-links": "^10.4.2",
+    "@storybook/react-vite": "^10.4.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^29.1.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "storybook": "^10.4.2",
+    "typescript": "^5.6.0",
+    "vite": "^8.0.7",
+    "vitest": "^4.1.8"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "license": "Apache-2.0",
+  "author": "Viglet",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openviglet/turing.git",
+    "directory": "frontend/packages/react-ui"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sizeBudget": {
+    "strict": true,
+    "total": 23000,
+    "entries": {
+      "index.js": 1450,
+      "tokens.js": 1100,
+      "TuringHtmlSandbox.js": 3200,
+      "TuringD2Diagram.js": 2400,
+      "TuringMarkdown.js": 2400,
+      "TuringRichContent.js": 2100,
+      "TuringCopyButton.js": 1800,
+      "TuringChatMessage.js": 1700,
+      "TuringSourceChips.js": 2300,
+      "TuringCodeBlock.js": 1500,
+      "TuringThinkingDots.js": 1200,
+      "TuringSearchBar.js": 900,
+      "TuringResultList.js": 700,
+      "TuringPagination.js": 900,
+      "TuringSearchFieldView.js": 1850,
+      "TuringWorkspacePanelView.js": 1400
+    }
+  },
+  "keywords": ["viglet", "turing", "react", "ui", "headless", "chat"]
+}

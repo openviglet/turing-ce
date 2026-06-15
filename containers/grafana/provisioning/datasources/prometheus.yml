@@ -1,0 +1,54 @@
+# Datasource provisioning loaded by Grafana on startup. Targets the Prometheus
+# instance defined in docker-compose (service name `turing-prometheus`).
+# Adjust the URL if running Grafana standalone outside compose.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: turing-prometheus
+    type: prometheus
+    access: proxy
+    url: http://turing-prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: 5s
+
+  # Direct read access to the Turing database for usage analytics dashboards
+  # (TurSNSiteMetricAccess entries). Credentials match docker-compose.yaml;
+  # change for any non-dev deployment.
+  - name: MariaDB
+    uid: turing-mariadb
+    type: mysql
+    url: turing-mariadb:3306
+    user: turing
+    isDefault: false
+    editable: true
+    jsonData:
+      database: turing
+      maxOpenConns: 10
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+    secureJsonData:
+      password: turing
+
+  # Infinity (yesoreyeram-infinity-datasource) — generic JSON over HTTP. Used
+  # by the Chat Analytics dashboard to pull aggregated and per-session data
+  # from the Turing backend. Engine-agnostic: the same dashboard works whether
+  # the backing store is MongoDB or Redis (turing.logging.engine).
+  - name: TuringChatAnalytics
+    uid: turing-chat-analytics
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    isDefault: false
+    editable: true
+    jsonData:
+      global_queries: []
+      auth_method: "none"
+      # host.docker.internal resolves to the Docker host on Windows/macOS, so
+      # this works whether Turing runs via `mvn spring-boot:run` on the host or
+      # inside docker-compose (compose can alias `turing` → host via
+      # extra_hosts on Linux). Keep this in sync with prometheus.yml.
+      allowedHosts:
+        - "http://host.docker.internal:2700"
+      tlsSkipVerify: true

@@ -1,0 +1,101 @@
+# ── Build outputs ────────────────────────────────────────────
+/bin/
+/build/
+/target/
+/dist/
+/backup/
+
+# ── IDE & editor ─────────────────────────────────────────────
+/.idea
+/.classpath
+/.settings
+/.project
+/.gradle/
+/.claude
+.sts4-cache
+.metals
+.bloop
+.sonar_lock
+.mtj.tmp/
+
+# ── JVM crash logs ───────────────────────────────────────────
+hs_err_pid*
+
+# ── Package archives ────────────────────────────────────────
+*.war
+*.ear
+
+# ── Node / pnpm ──────────────────────────────────────────────
+node
+node_modules/
+/frontend/bin/
+# Workspace uses pnpm — npm's package-lock is not authoritative and
+# would drift from pnpm-lock.yaml if accidentally generated. Keep it ignored.
+package-lock.json
+# yarn, just in case
+yarn.lock
+
+# ── Maven flatten / shade ───────────────────────────────────
+.flattened-pom.xml
+dependency-reduced-pom.xml
+
+# ── Runtime data & storage ──────────────────────────────────
+/store/
+/store.*
+/logs/
+/activemq-data
+/models
+/nashorn_code_cache
+db-encrypted.properties
+
+# ── Docker volumes ──────────────────────────────────────────
+/volumes/mariadb/*
+!/volumes/mariadb/.gitkeep
+/volumes/turing/*
+!/volumes/turing/.gitkeep
+
+# ── Turing App ──────────────────────────────────────────────
+/turing-app/export
+turing-app/src/main/resources/public/index.html
+turing-app/src/main/resources/public/favicon.ico
+
+# ── Turing React ────────────────────────────────────────────
+/turing-react/.__mf__temp
+
+# ── Turing React SDK ────────────────────────────────────────
+turing-react-sdk/dist
+
+# ── Turing Marketplace (generated manifests, builds, exports) ──
+turing-marketplace/*/app/public/turing-manifest.json
+turing-marketplace/*/app/dist
+turing-marketplace/*/app/*.zip
+turing-marketplace/*/export/*.zip
+
+# ── GitHub Actions ──────────────────────────────────────────
+/.github/appmod
+
+# ── Python cache ────────────────────────────────────────────
+__pycache__/
+/turing-react/.mf
+turing-react-sdk/debug-storybook.log
+**/storybook-static/
+/.github/modernize
+/frontend/.turbo
+/frontend/apps/marketplace/space-missions/dist
+frontend/apps/marketplace/space-missions/space-missions.zip
+/frontend/apps/marketplace/vinyl-records/dist
+/frontend/apps/turing-app/.__mf__temp
+/frontend/packages/react-sdk/.turbo
+frontend/packages/react-sdk/debug-storybook.log
+/frontend/packages/shared-types/.turbo
+/frontend/packages/shared-types/dist
+/frontend/apps/marketplace/mythical-creatures/dist
+frontend/apps/marketplace/mythical-creatures/mythical-creatures.zip
+/frontend/apps/marketplace/space-missions/.turbo
+/frontend/apps/marketplace/vinyl-records/.turbo
+/frontend/apps/marketplace/mythical-creatures/.turbo
+frontend/apps/marketplace/vinyl-records/vinyl-records.zip
+/turing-app/src/test/resources/h2-snapshot
+/frontend/packages/sdk/.turbo
+/frontend/packages/react-ui/dist
+/frontend/packages/react-ui/.turbo

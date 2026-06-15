@@ -1,0 +1,63 @@
+{
+  "admin": {
+    "title": "Administration",
+    "console": "Administration Console",
+    "settings": "Settings",
+    "users": {
+      "title": "Users",
+      "description": "Manage user accounts and access.",
+      "keycloakDescription": "Read-only directory of users sourced from the configured Keycloak realm.",
+      "keycloakViewDescription": "Read-only details from the Keycloak realm.",
+      "keycloakSourceTitle": "Keycloak account",
+      "keycloakSourceDesc": "These attributes are managed in Keycloak. Use the Keycloak admin console to make changes.",
+      "keycloakGroupsTitle": "Group memberships",
+      "keycloakGroupsDesc": "Groups this user belongs to in the Keycloak realm.",
+      "keycloakRealmRolesTitle": "Realm roles",
+      "keycloakRealmRolesDesc": "Realm-level roles assigned in Keycloak.",
+      "newUser": "New User",
+      "createDescription": "Create a new user account.",
+      "editDescription": "Edit user account details.",
+      "deleted": "User \"{{name}}\" was deleted.",
+      "deleteFailed": "Failed to delete user \"{{name}}\".",
+      "loadFailed": "Failed to load users.",
+      "loadOneFailed": "Failed to load user.",
+      "fullName": "Full name",
+      "emailVerified": "Email verified",
+      "enabled": "Enabled",
+      "disabled": "Disabled"
+    },
+    "groups": {
+      "title": "Groups",
+      "description": "Organize users into groups with shared permissions.",
+      "keycloakDescription": "Read-only directory of groups sourced from the configured Keycloak realm.",
+      "keycloakViewDescription": "Read-only details from the Keycloak realm.",
+      "keycloakSourceTitle": "Keycloak group",
+      "keycloakSourceDesc": "These attributes are managed in Keycloak. Use the Keycloak admin console to make changes.",
+      "keycloakMembersTitle": "Members",
+      "keycloakMembersDesc": "Realm users that belong to this group.",
+      "keycloakRealmRolesTitle": "Realm roles",
+      "keycloakRealmRolesDesc": "Realm-level roles attached to this group in Keycloak.",
+      "keycloakSubGroupsTitle": "Sub-groups",
+      "keycloakSubGroupsDesc": "Direct child groups inside this group.",
+      "newGroup": "New Group",
+      "createDescription": "Create a new user group.",
+      "editDescription": "Edit group details and members.",
+      "deleted": "Group \"{{name}}\" was deleted.",
+      "deleteFailed": "Failed to delete group \"{{name}}\".",
+      "loadFailed": "Failed to load groups.",
+      "loadOneFailed": "Failed to load group."
+    },
+    "roles": {
+      "title": "Roles",
+      "description": "Define roles and their associated permissions.",
+      "newRole": "New Role",
+      "createDescription": "Create a new access role.",
+      "editDescription": "Edit role details and permissions.",
+      "loadFailed": "Failed to load roles.",
+      "loadOneFailed": "Failed to load role."
+    },
+    "systemInfo": {
+      "title": "System Information"
+    }
+  }
+}

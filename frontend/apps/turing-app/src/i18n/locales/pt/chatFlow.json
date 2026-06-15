@@ -1,0 +1,299 @@
+{
+  "chatFlow": {
+    "title": "Chat Flow Builder",
+    "description": "Desenhe fluxos de conversa que o seu agente de IA deverá seguir.",
+    "tabs": {
+      "settings": "Configurações",
+      "diagram": "Diagrama"
+    },
+    "sections": {
+      "general": {
+        "title": "Geral",
+        "description": "Identidade e estratégia de contenção em tempo de execução."
+      },
+      "trigger": {
+        "title": "Disparo automático",
+        "description": "Quando e com que frequência o roteador LLM deve ativar este fluxo."
+      }
+    },
+    "newInstance": "Novo Chat Flow",
+    "blankTitle": "Nenhum chat flow ainda",
+    "blankDescription": "Crie seu primeiro chat flow para roteirizar como o agente de IA deve conduzir uma conversa.",
+    "saved": "Chat flow \"{{name}}\" foi salvo.",
+    "updated": "Chat flow \"{{name}}\" foi atualizado.",
+    "notSaved": "Não foi possível salvar o chat flow \"{{name}}\".",
+    "deleted": "Chat flow \"{{name}}\" foi excluído.",
+    "notDeleted": "Não foi possível excluir o chat flow \"{{name}}\".",
+    "imported": "Chat flow \"{{name}}\" foi carregado — revise e salve para persistir.",
+    "importFailed": "Não foi possível importar o chat flow — o arquivo não é uma exportação válida.",
+    "fields": {
+      "name": "Nome",
+      "namePlaceholder": "ex.: Captura de lead",
+      "description": "Descrição",
+      "descriptionPlaceholder": "Resumo opcional do que este fluxo faz.",
+      "guardrailMethod": "Método de Guard Rail",
+      "captureMode": "Modo de Captura",
+      "captureModeJudgeOnly": "O Modo de Captura só se aplica quando o Método de Guard Rail é LLM como juiz — os outros métodos não têm juiz para inverter.",
+      "abandonHandoffMessage": "Handoff por Desistência",
+      "abandonHandoffMessagePlaceholder": "ex.: Antes de você ir — quer falar com um de nossos consultores?",
+      "abandonHandoffMessageHint": "Quando o juiz detecta que o visitante quer desistir, encerre com esta oferta para falar com um humano (e marque a conversa para handoff) em vez de apenas se despedir. Deixe em branco para manter o encerramento padrão.",
+      "abandonHandoffMessageJudgeOnly": "O Handoff por Desistência só se aplica quando o Método de Guard Rail é LLM como juiz — os outros métodos não têm sinal de desistência.",
+      "triggerDescription": "Condição de Disparo",
+      "triggerDescriptionPlaceholder": "ex.: Use este fluxo quando o usuário quiser agendar uma reunião ou perguntar sobre disponibilidade.",
+      "triggerDescriptionHint": "Descrição em linguagem natural que o roteador LLM usa para decidir se uma mensagem do usuário deve ativar este fluxo. Deixe em branco para desativar o disparo automático.",
+      "helpWriteTrigger": "Me ajude a escrever",
+      "helpWriteTriggerTitle": "Me ajude a escrever a condição de disparo",
+      "helpWriteTriggerDescription": "Descreva em suas palavras quando este fluxo deve ser ativado — intenções de exemplo, frases que o usuário pode dizer e quando ele NÃO deve disparar. A LLM gera uma condição concisa para o roteador usar.",
+      "helpWriteTriggerPlaceholder": "ex.: Ativar quando o usuário quiser pedir pizza, mencionar sabores, tamanhos, entrega ou retirada. NÃO disparar para perguntas gerais sobre o cardápio ou reclamações.",
+      "helpWriteTriggerHint": "Dica: descreva também o que NÃO deve ativar este fluxo, não só o que deve.",
+      "helpWriteTriggerGenerate": "Gerar condição",
+      "triggerMode": "Modo de Disparo",
+      "triggerLanguage": "Idioma da condição"
+    },
+    "triggerModes": {
+      "ONCE": {
+        "label": "Uma vez por conversa",
+        "description": "Após o fluxo terminar, o roteador não vai disparar novamente nesta conversa."
+      },
+      "ALWAYS": {
+        "label": "Sempre re-disparar",
+        "description": "Sempre que a mensagem do usuário casar com a condição, o fluxo reinicia desde o primeiro passo."
+      }
+    },
+    "triggerLanguages": {
+      "AUTO": {
+        "label": "Detectar automaticamente",
+        "description": "O roteador detecta o idioma da condição em cada turno. Bom default — só mude se notar que fluxos em inglês estão sendo perdidos."
+      },
+      "PT": {
+        "label": "Português",
+        "description": "Tokeniza com analisador português (light stemming, stopwords PT). Use quando a condição está escrita em português."
+      },
+      "EN": {
+        "label": "Inglês",
+        "description": "Tokeniza com analisador inglês (Porter stemming, stopwords EN). Use quando a condição está escrita em inglês."
+      }
+    },
+    "guardrailMethods": {
+      "LLM_JUDGE": {
+        "label": "LLM como juiz (recomendado)",
+        "description": "Mais confiável em produção. Após cada turno, uma chamada à LLM focada retorna um JSON com o veredito (no tópico, valor capturado, pronto para avançar). O juiz roda sem o histórico do chat ou o ruído das tools, então até modelos menores seguem o contrato de forma confiável. ~1 chamada extra à LLM por turno (~200 tokens extras)."
+      },
+      "HEURISTIC": {
+        "label": "Heurística (mais barato)",
+        "description": "Contrato no prompt + heurística de regex/keyword. Sem chamadas extras à LLM. Confiável para nós com validação estrita (e-mail, telefone, número, data, URL). Para nós de texto livre (nome, sabor, pergunta genérica) aceita qualquer resposta do usuário como valor — frágil em conversas reais."
+      },
+      "STRUCTURED_OUTPUT": {
+        "label": "Saída estruturada (uma chamada)",
+        "description": "Tenta unir a resposta para o usuário e o veredito numa única chamada JSON. Soa ideal, mas modelos menores (GPT-4o-mini) costumam ignorar o contrato JSON quando o histórico cresce ou há muitas tools ativas, caindo no juiz como fallback mesmo assim — saindo mais caro que o LLM como juiz puro. Vale a pena apenas com modelos topo de linha (GPT-4o completo, Claude 3.7 Sonnet)."
+      }
+    },
+    "captureModes": {
+      "VALIDATE_THEN_CAPTURE": {
+        "label": "Validar e depois capturar (padrão)",
+        "description": "Comportamento legado. O juiz roda primeiro e controla a captura — o slot só é gravado quando o juiz aceita o valor. Uma resposta rejeitada deixa o slot vazio e mantém o cursor no passo (o clássico 'fluxo travado num slot nulo'). Use onJudgeReject num passo para suavizar isso por nó."
+      },
+      "CAPTURE_THEN_GATE": {
+        "label": "Capturar primeiro, validação controla",
+        "description": "A resposta do usuário é gravada no slot antes do juiz rodar, então o slot nunca fica vazio depois de uma resposta. O juiz passa a ser consultivo — refina o valor e grava uma nota em <slot>__confidence, mas não pode mais bloquear um valor que passa na regra de validação do passo. Uma regra de validação que falha (e-mail, telefone, CPF…) ainda repergunta, agora com a tentativa capturada e confiança=baixa."
+      },
+      "CAPTURE_THEN_GRADE": {
+        "label": "Capturar primeiro, sempre avançar",
+        "description": "Capturar e avaliar: a resposta é gravada no slot e o fluxo sempre avança, a menos que o usuário desista. Tanto a regra de validação quanto o juiz são puramente consultivos — apenas definem a nota em <slot>__confidence. Máximo 'nunca travar', mas um passo seguinte precisa decidir o que fazer com capturas de baixa confiança."
+      }
+    },
+    "errors": {
+      "nameRequired": "Informe um nome para o chat flow antes de salvar."
+    },
+    "actions": {
+      "save": "Salvar",
+      "saving": "Salvando…",
+      "preview": "Pré-visualizar",
+      "exportJson": "Exportar JSON",
+      "importJson": "Importar JSON"
+    },
+    "selector": {
+      "label": "Chat Flow",
+      "auto": "Detecção automática",
+      "placeholder": "Escolha um fluxo"
+    },
+    "reset": {
+      "label": "Reiniciar fluxo",
+      "done": "Fluxo reiniciado — sua próxima mensagem começa no primeiro passo.",
+      "failed": "Não foi possível reiniciar o fluxo."
+    },
+    "zoom": "Zoom",
+    "palette": {
+      "title": "Componentes",
+      "hint": "Arraste um componente para o canvas e conecte os handles para ligar o fluxo.",
+      "start": "Início",
+      "end": "Fim",
+      "aiQuestion": "Pergunta (IA)",
+      "formCapture": "Captura de Formulário",
+      "condition": "Condição",
+      "functionCall": "Chamada de Função",
+      "webhook": "Webhook",
+      "subFlow": "Sub Fluxo",
+      "subFlowSwitch": "Seletor de Sub-fluxo",
+      "persona": "Trocar Persona",
+      "switch": "Seletor",
+      "slot": "Slot",
+      "writeSlot": "Gravar Slot (com template)",
+      "scheduleAgent": "Rotina Agendada",
+      "suspend": "Suspender",
+      "planningStep": "Passo de Planejamento",
+      "iteratePlan": "Iterar Plano"
+    },
+    "properties": {
+      "header": "Propriedades do Nó",
+      "empty": "Selecione um nó para editar suas propriedades.",
+      "close": "Fechar",
+      "stepName": "Nome do Passo",
+      "stepNamePlaceholder": "ex.: PERGUNTAR AO USUÁRIO",
+      "aiInstruction": "Instrução para a IA",
+      "aiInstructionPlaceholder": "Pergunte algo ao usuário e capture a resposta. Saída esperada: o valor que deseja armazenar.",
+      "aiInstructionHint": "Prompt enviado ao Spring AI quando este passo for executado.",
+      "outputVariable": "Variável de Saída",
+      "outputVariablePlaceholder": "Selecione um slot…",
+      "outputVariableEmpty": "Nenhum slot definido para este agente. Cadastre um em Slots na barra lateral primeiro.",
+      "outputVariableHint": "Escolhe um item do catálogo de slots tipados do agente para garantir um schema estável dos valores capturados.",
+      "overrideExistingValue": "Sempre perguntar (sobrescrever valor existente)",
+      "overrideExistingValueHint": "Quando desmarcado, o engine pula este passo se o slot já estiver preenchido. Marque para sempre perguntar e sobrescrever o valor anterior.",
+      "onJudgeReject": "Quando o juiz rejeita a resposta",
+      "onJudgeRejectHint": "Só se aplica quando o guardrailMethod do agente é LLM_JUDGE. O padrão repergunta ao usuário quando o juiz produziu um redirecionamento; advance_with_literal força a captura da mensagem do usuário após retry; block sempre confia no juiz.",
+      "onJudgeRejectOptions": {
+        "reprompt": "Repergunta (padrão) — confia no redirecionamento do juiz",
+        "advance_with_literal": "Avança com literal — captura forçada da mensagem do usuário",
+        "block": "Bloquear — nunca captura forçada, sempre repergunta"
+      },
+      "toolsEnabled": "Permitir chamadas de tool nesse nó",
+      "toolsEnabledHint": "Quando desligado, as tool callbacks do agente (MCP / native / custom) são removidas nesse nó. Use para impedir que o LLM chame uma tool preemptivamente antes do slot ser capturado. Substitui o sentinel legado \"NÃO CHAME NENHUMA TOOL\" no aiInstruction.",
+      "requiredTools": "Tools obrigatórias (uma por linha)",
+      "requiredToolsHint": "Nomes de tools que precisam chegar até o LLM nesse nó, mesmo quando o pré-filtro de tools as descartaria por baixa similaridade com a mensagem do usuário. Uma por linha — precisa bater com o nome do @Tool, da MCP tool ou da custom tool.",
+      "nodeAbTest": {
+        "experimentKey": "Chave de experimento A/B do nó",
+        "experimentKeyHint": "Defina uma chave para fazer A/B só da instrução deste nó. Cada conversa recebe de forma fixa um dos braços abaixo — sem precisar duplicar o fluxo inteiro. Independente do A/B em nível de fluxo na aba Configurações.",
+        "variants": "Variantes",
+        "addVariant": "Adicionar variante",
+        "removeVariant": "Remover variante",
+        "empty": "Nenhuma variante ainda. Adicione ao menos dois braços para rodar o teste.",
+        "labelPlaceholder": "Nome do braço (ex.: controle / direto)",
+        "weight": "Peso",
+        "instructionPlaceholder": "Sobrescrita da instrução / template — deixe em branco para o braço de controle (mantém o texto base).",
+        "variantsHint": "Os pesos são relativos (50/50 ≡ 1/1). Um braço com peso 0 fica pausado. Uma sobrescrita em branco mantém o texto original do nó — use no braço de controle. Em nós functionCall / scheduleAgent a sobrescrita troca o template de input da tool / payload da rotina em vez de uma pergunta."
+      },
+      "functionName": "Função",
+      "toolSource": "Origem da Ferramenta",
+      "toolSourceOptions": {
+        "NATIVE": "Funções nativas do Turing",
+        "MCP": "Servidor MCP"
+      },
+      "nativeTool": "Tool Calling",
+      "nativeToolPlaceholder": "Escolha uma ferramenta nativa do Turing",
+      "nativeToolHint": "Método @Tool do Spring AI exposto pelo backend do Turing.",
+      "mcpServer": "Servidor MCP",
+      "mcpServerPlaceholder": "Escolha um servidor MCP",
+      "mcpServerHint": "Todas as ferramentas expostas pelo servidor MCP selecionado ficarão disponíveis para a LLM.",
+      "scheduleAgent": {
+        "routineId": "Rotina",
+        "routineIdPlaceholder": "Escolha uma rotina…",
+        "routineIdEmpty": "Nenhuma rotina cadastrada. Crie uma em Rotinas primeiro.",
+        "routineIdHint": "Rotina configurada para executar de forma assíncrona. O fluxo aguarda neste nó até a rotina gravar o slot de saída (ou expirar).",
+        "payloadTemplate": "Template do Payload (JSON)",
+        "payloadTemplateHint": "Template JSON enviado à rotina. Marcadores {{nomeSlot}} são interpolados a partir dos slots da conversa antes do envio. Em branco envia {}.",
+        "outputVariable": "Slot de Saída",
+        "timeoutMs": "Timeout (ms)",
+        "timeoutMsHint": "Override por nó (em milissegundos). Em branco usa o timeout padrão da rotina. Ao expirar, o engine segue pela aresta 'timeout' (ou pela primeira aresta se não houver)."
+      },
+      "webhook": {
+        "webhook": "Webhook",
+        "webhookPlaceholder": "Escolha um webhook…",
+        "webhookEmpty": "Nenhum webhook definido. Crie um em Webhooks primeiro.",
+        "webhookHint": "Dispara o webhook selecionado (envio ao CRM) quando o fluxo chega neste nó. A URL de destino, método, cabeçalhos, template de payload e credenciais vêm da configuração do próprio webhook."
+      },
+      "continueOnFailure": "Continuar em caso de falha (try/catch)",
+      "continueOnFailureHint": "Quando marcado, uma falha de tool/rotina roteia o fluxo pela aresta de saída cujo handle é 'failure' — desenhe um caminho alternativo para recuperação graciosa (pedir desculpa, repergunta ao usuário, escalar para handoff). Quando desmarcado, o engine registra o erro e avança pela primeira aresta de saída (comportamento legado).",
+      "condition": "Expressão da Condição",
+      "subFlow": "Sub Fluxo",
+      "subFlowPlaceholder": "Escolha um chat flow",
+      "subFlowEmpty": "Não há outros chat flows disponíveis para este agente.",
+      "subFlowHint": "Quando este passo executar, o controle é passado para o chat flow selecionado dentro do mesmo agente de IA.",
+      "persona": "Persona Ativa",
+      "personaPlaceholder": "Escolha uma persona do catálogo do agent",
+      "personaEmpty": "Este agent não tem nenhuma persona no catálogo. Cadastre na página Personas do agent.",
+      "personaHint": "Quando este passo executar, a conversa muda imediatamente para a voz desta persona. A troca persiste até atravessar outro nó Persona ou até o fim da conversa.",
+      "switchVariable": "Variável do Seletor",
+      "switchVariablePlaceholder": "Selecione um slot…",
+      "switchVariableEmpty": "Nenhum slot definido para este agente. Cadastre um em Slots na barra lateral primeiro.",
+      "switchVariableHint": "Escolhe o slot tipado que o engine lê para rotear este Seletor — mantenha um slot por variável de ramificação.",
+      "switchOverrideHint": "Quando marcado, o Seletor reavalia o slot mesmo que ele já tenha um valor; caso contrário, reusa o valor capturado anteriormente.",
+      "switchOptions": "Opções do Seletor",
+      "switchOptionsHint": "Cada opção vira um handle separado à direita do nó — conecte cada um a um fluxo distinto.",
+      "subFlowSwitchOptionsHint": "Cada opção liga uma correspondência de rótulo à descida em um sub-fluxo. A aresta curinga é disparada quando nenhuma opção corresponde ou quando a opção correspondente não tem sub-fluxo selecionado.",
+      "subFlowSwitchOptionPlaceholder": "Escolha um sub-fluxo para esta opção…",
+      "switchOptionsEmpty": "Nenhuma opção ainda — adicione uma para expor uma ramificação.",
+      "switchOptionPlaceholder": "ex.: Opção {{index}}",
+      "switchAddOption": "Adicionar opção",
+      "switchRemoveOption": "Remover opção",
+      "validationRule": "Regras de Validação",
+      "validationNone": "Nenhuma",
+      "validation": {
+        "none": "Nenhuma",
+        "email": "E-mail",
+        "phone": "Telefone",
+        "url": "URL",
+        "number": "Número",
+        "date": "Data"
+      },
+      "slotOperation": "Operação",
+      "slotOperationHint": "Definir grava um valor literal no slot escolhido; Excluir remove o slot do estado da conversa.",
+      "slotOperationOptions": {
+        "SET": "Definir valor",
+        "DELETE": "Excluir valor"
+      },
+      "slotName": "Slot",
+      "slotNamePlaceholder": "Selecione um slot…",
+      "slotNameEmpty": "Nenhum slot definido para este agente. Cadastre um em Slots na barra lateral primeiro.",
+      "slotNameHint": "Slot em que o engine grava (ou exclui). Precisa estar declarado no catálogo de slots do agente.",
+      "slotValue": "Valor",
+      "slotValuePlaceholder": "Valor literal a ser gravado",
+      "slotValueHint": "Armazenado literalmente no estado da conversa; nós Switch ou AI Question posteriores podem lê-lo.",
+      "slotOverrideHint": "Quando marcado, sobrescreve o slot mesmo que ele já tenha um valor; caso contrário o nó não faz nada para preservar o valor existente."
+    },
+    "preview": {
+      "title": "Pré-visualização",
+      "close": "Fechar pré-visualização",
+      "empty": "Adicione um nó Início e pelo menos um passo para ver a pré-visualização.",
+      "bot": "Assistente",
+      "user": "Usuário",
+      "footer": "A pré-visualização percorre o fluxo seguindo a primeira aresta de saída de cada nó. Ferramentas e LLMs não são executados."
+    },
+    "aiChat": {
+      "breadcrumb": "Criar com IA",
+      "panelTitle": "Autoria com IA",
+      "panelSubtitle": "Descreva a conversa e eu monto o fluxo",
+      "placeholder": "ex.: Crie um fluxo de reserva de hotel: pergunte a cidade de destino, datas de check-in/out e número de hóspedes, valide cada valor, depois chame uma função para verificar disponibilidade e termine com um resumo de confirmação.",
+      "empty": "Comece descrevendo a conversa que quer roteirizar. Vou adicionando nós, ligando ramificações e escolhendo guard rails conforme conversamos.",
+      "untitled": "Fluxo sem nome",
+      "tipTitle": "Conte o que seu bot deve fazer",
+      "tipDesc": "Descreva o objetivo, as perguntas, o que validar e quaisquer consultas externas. Vou construir um fluxo com início/fim, perguntas de IA, condições e chamadas de função.",
+      "metaTitle": "Metadados do fluxo",
+      "metaDesc": "Roteamento e configuração de execução deste fluxo.",
+      "guardrail": "Guard rail",
+      "triggerMode": "Modo de disparo",
+      "enabled": "Ativo",
+      "nodeCount": "Nós",
+      "triggerDescription": "Condição de disparo",
+      "no": "Não",
+      "yes": "Sim",
+      "graphTitle": "Passos do fluxo",
+      "graphDesc": "Pré-visualização ordenada dos nós e suas ramificações. O editor visual abre após salvar.",
+      "nameRequired": "Informe um nome para o chat flow antes de salvar.",
+      "emptyFlow": "Adicione pelo menos um passo antes de salvar.",
+      "saved": "Chat flow \"{{name}}\" foi salvo.",
+      "saveFailed": "Não foi possível salvar o chat flow.",
+      "saving": "Salvando…",
+      "saveAndOpen": "Salvar e abrir no editor"
+    }
+  }
+}

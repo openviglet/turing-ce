@@ -1,0 +1,93 @@
+{
+  "chat": {
+    "askMeAnything": "Pergunte-me qualquer coisa",
+    "scheduleAgent": {
+      "waiting": "Aguardando rotina…",
+      "waiting_one": "Aguardando rotina…",
+      "waiting_other": "Aguardando {{count}} rotinas…"
+    },
+    "noDefaultLlm": "Nenhum LLM padrão configurado",
+    "howCanIHelp": "Como posso ajudá-lo hoje?",
+    "sessions": "Sessões",
+    "noSavedSessions": "Nenhuma sessão salva",
+    "msgs": "msgs",
+    "deleteSession": "Excluir sessão",
+    "selectModel": "Selecione um modelo...",
+    "newChat": "Novo Chat",
+    "chatTab": "Chat",
+    "semanticTab": "Semântico",
+    "semanticTabShort": "SN",
+    "dropFilesHere": "Solte os arquivos aqui",
+    "attachFiles": "Anexar arquivos",
+    "removeFile": "Remover {{name}}",
+    "copyToClipboard": "Copiar para a área de transferência",
+    "you": "Você",
+    "sources": {
+      "heading": "Fontes",
+      "why": "Por que você disse isso?",
+      "open": "Abrir fonte",
+      "passage": "Trecho",
+      "keywordOnly": "correspondência por palavra-chave",
+      "confidenceHigh": "Alta confiança",
+      "confidenceMedium": "Confiança média",
+      "confidenceLow": "Baixa confiança"
+    },
+    "selectModelToStart": "Selecione um modelo para começar...",
+    "selectModelToChat": "Selecione um modelo de linguagem para começar a conversar.",
+    "selectModelToExplore": "Selecione um modelo de linguagem para começar a explorar.",
+    "selectModelToStartAgent": "Selecione um modelo de linguagem para começar.",
+    "askAboutContent": "Faça perguntas sobre seu conteúdo indexado.",
+    "askAnythingAgent": "Pergunte qualquer coisa que este agente possa ajudar.",
+    "askAboutSemantic": "Pergunte sobre seu conteúdo de navegação semântica...",
+    "askAgent": "Pergunte ao {{agent}}...",
+    "usingModel": "Usando {{model}} ({{vendor}})",
+    "usingModelForSN": "Faça perguntas sobre seu conteúdo indexado. Usando {{model}}.",
+    "usingModelForAgent": "Usando {{model}}. Pergunte qualquer coisa que este agente possa ajudar.",
+    "noLlmAvailable": "Nenhum Modelo de Linguagem Disponível",
+    "noLlmDescription": "Para usar o chat, crie e habilite pelo menos uma instância de LLM.",
+    "createLlmInstance": "Criar Instância de LLM",
+    "noAgentAvailable": "Nenhum Agente de IA Disponível",
+    "noAgentDescription": "Para usar o chat, cadastre e habilite pelo menos um agente de IA.",
+    "createAiAgent": "Criar Agente de IA",
+    "failedResponse": "Falha ao obter resposta. Verifique a configuração do seu LLM.",
+    "failedAgentResponse": "Falha ao obter resposta de {{agent}}.",
+    "contextCompacted": "Contexto compactado com sucesso.",
+    "failedCompact": "Falha ao compactar contexto.",
+    "contextCompactedLabel": "**[Contexto compactado]**",
+    "sessionInfo": {
+      "button": "Informações da sessão",
+      "title": "Informações da sessão",
+      "description": "Detalhes da conversa atual. Os valores dos slots são atualizados enquanto este painel está aberto.",
+      "conversationId": "ID da conversa",
+      "noActiveSession": "Nenhuma sessão ativa. Envie uma mensagem para iniciar.",
+      "copied": "ID da conversa copiado para a área de transferência",
+      "export": "Exportar conversa",
+      "exportSuccess": "Conversa exportada",
+      "exportError": "Falha ao exportar esta conversa.",
+      "slots": "Slots",
+      "slotsEmpty": "Nenhum slot foi capturado ainda nesta conversa.",
+      "slotsError": "Falha ao carregar os valores dos slots desta conversa.",
+      "auditTitle": "Linha do tempo de escritas",
+      "auditEmpty": "Nenhuma escrita de slot foi registrada para esta conversa.",
+      "auditError": "Falha ao carregar o histórico de auditoria de slots.",
+      "auditSource": {
+        "NODE": "Nó",
+        "TOOL": "Ferramenta",
+        "ENDPOINT": "Endpoint",
+        "EXTRACT": "Extração"
+      },
+      "auditFromTo": "{{from}} → {{to}}",
+      "auditEmptyValue": "(vazio)",
+      "auditCleared": "(limpo)",
+      "workspace": "Arquivos do workspace",
+      "workspaceEmpty": "Nenhum arquivo foi gerado para esta conversa ainda.",
+      "workspaceError": "Stream do workspace indisponível para esta conversa."
+    },
+    "skill": {
+      "selector": {
+        "placeholder": "Modo skill",
+        "auto": "Todas as skills (auto)"
+      }
+    }
+  }
+}

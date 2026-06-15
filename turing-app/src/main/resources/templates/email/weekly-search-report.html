@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Viglet Turing ES - Monthly Search Report</title>
+  </head>
+  <body
+    style="
+      margin: 0;
+      padding: 0;
+      background-color: #0a0a0f;
+      font-family: &quot;Segoe UI&quot;, Roboto, Helvetica, Arial, sans-serif;
+    "
+  >
+    <table
+      role="presentation"
+      cellspacing="0"
+      cellpadding="0"
+      border="0"
+      width="100%"
+      style="background-color: #0a0a0f"
+    >
+      <tr>
+        <td align="center" style="padding: 32px 16px">
+          <table
+            role="presentation"
+            cellspacing="0"
+            cellpadding="0"
+            border="0"
+            width="660"
+            style="max-width: 660px; width: 100%"
+          >
+            <!-- Hero Header -->
+            <tr>
+              <td
+                style="
+                  background-color: #2563eb;
+                  border-radius: 20px 20px 0 0;
+                  padding: 48px 40px 36px;
+                "
+              >
+                <table
+                  role="presentation"
+                  cellspacing="0"
+                  cellpadding="0"
+                  border="0"
+                  width="100%"
+                >
+                  <tr>
+                    <td>
+                      <div
+                        style="
+                          display: inline-block;
+                          background-color: #4169e1;
+                          border: 2px solid #ffffcc;
+                          border-radius: 7px;
+                          width: 44px;
+                          height: 44px;
+                          text-align: left;
+                          font-size: 20px;
+                          font-weight: 500;
+                          color: #ffffcc;
+                          font-family:
+                            &quot;Proxima Nova&quot;, &quot;Segoe UI&quot;,
+                            system-ui, sans-serif;
+                          margin-bottom: 20px;
+                          padding: 11px 0 0 5px;
+                          box-sizing: border-box;
+                        "
+                      >
+                        Tu
+                      </div>
+                      <h1
+                        style="
+                          margin: 12px 0 6px;
+                          font-size: 30px;
+                          font-weight: 800;
+                          color: #ffffff;
+                          letter-spacing: -0.5px;
+                        "
+                      >
+                        Monthly Intelligence Report
+                      </h1>
+                      <p
+                        style="
+                          margin: 4px 0 0;
+                          font-size: 13px;
+                          color: #93c5fd;
+                          font-weight: 600;
+                          letter-spacing: 0.5px;
+                        "
+                      >
+                        VIGLET TURING ES
+                      </p>
+                      <p
+                        style="
+                          margin: 6px 0 0;
+                          font-size: 15px;
+                          color: #bfdbfe;
+                          font-weight: 400;
+                        "
+                      >
+                        {{reportPeriod}}
+                      </p>
+                    </td>
+                    <td align="right" valign="top" style="padding-left: 16px">
+                      <div
+                        style="
+                          background-color: #1d4ed8;
+                          border: 1px solid #3b82f6;
+                          border-radius: 16px;
+                          padding: 16px 20px;
+                          text-align: center;
+                        "
+                      >
+                        <div
+                          style="
+                            font-size: 10px;
+                            text-transform: uppercase;
+                            letter-spacing: 1.5px;
+                            color: #93c5fd;
+                            margin-bottom: 6px;
+                          "
+                        >
+                          Total Searches
+                        </div>
+                        <div
+                          style="
+                            font-size: 36px;
+                            font-weight: 900;
+                            color: #ffffff;
+                            line-height: 1;
+                          "
+                        >
+                          {{totalSearches}}
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- Decorative accent line -->
+            <tr>
+              <td
+                style="
+                  background-color: #4f46e5;
+                  height: 3px;
+                  font-size: 0;
+                  line-height: 0;
+                "
+              >
+                &nbsp;
+              </td>
+            </tr>
+
+            <!-- Body -->
+            <tr>
+              <td style="background-color: #111118; padding: 0">
+                <!-- Site Cards -->
+                {{siteCards}}
+
+                <!-- Footer -->
+                <table
+                  role="presentation"
+                  cellspacing="0"
+                  cellpadding="0"
+                  border="0"
+                  width="100%"
+                >
+                  <tr>
+                    <td style="padding: 28px 40px 36px">
+                      <table
+                        role="presentation"
+                        cellspacing="0"
+                        cellpadding="0"
+                        border="0"
+                        width="100%"
+                        style="border-top: 1px solid #1e1e2e; padding-top: 24px"
+                      >
+                        <tr>
+                          <td>
+                            <table
+                              role="presentation"
+                              cellspacing="0"
+                              cellpadding="0"
+                              border="0"
+                              width="100%"
+                            >
+                              <tr>
+                                <td valign="middle">
+                                  <span
+                                    style="
+                                      font-size: 13px;
+                                      color: #64748b;
+                                      vertical-align: middle;
+                                    "
+                                  >
+                                    Generated by
+                                    <strong style="color: #94a3b8"
+                                      >Viglet Turing ES</strong
+                                    >
+                                    on {{generatedAt}}
+                                  </span>
+                                </td>
+                              </tr>
+                            </table>
+                            <p
+                              style="
+                                margin: 10px 0 0;
+                                font-size: 11px;
+                                color: #475569;
+                              "
+                            >
+                              Viglet Turing ES &bull; Enterprise Search
+                              Intelligence Platform
+                            </p>
+                          </td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- Bottom Accent Bar -->
+            <tr>
+              <td
+                style="
+                  background-color: #4f46e5;
+                  height: 4px;
+                  border-radius: 0 0 20px 20px;
+                  font-size: 0;
+                  line-height: 0;
+                "
+              >
+                &nbsp;
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

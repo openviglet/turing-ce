@@ -1,0 +1,67 @@
+<!-- Site Card: {{siteName}} -->
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+    <tr>
+        <td style="padding:28px 40px 0;">
+            <!-- Site Header with gradient accent -->
+            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#16161f;border-radius:16px;overflow:hidden;">
+                <tr>
+                    <td style="background-color:{{siteAccentColor}};height:3px;font-size:0;">&nbsp;</td>
+                </tr>
+                <tr>
+                    <td style="padding:24px 28px;">
+                        <!-- Site Name -->
+                        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
+                            <tr>
+                                <td>
+                                    <div style="display:inline-block;background:{{siteAccentColor}};border-radius:10px;width:40px;height:40px;text-align:center;line-height:40px;font-size:18px;color:#ffffff;font-weight:800;vertical-align:middle;">
+                                        {{siteInitial}}
+                                    </div>
+                                    <span style="font-size:20px;font-weight:800;color:#f1f5f9;vertical-align:middle;margin-left:14px;letter-spacing:-0.3px;">
+                                        {{siteName}}
+                                    </span>
+                                </td>
+                            </tr>
+                        </table>
+
+                        <!-- Stats Row -->
+                        <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="margin-top:20px;">
+                            <tr>
+                                <td width="33%" style="padding-right:6px;">
+                                    <div style="background:#0d0d14;border:1px solid #1e1e2e;border-radius:12px;padding:14px;text-align:center;">
+                                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:#64748b;margin-bottom:6px;">Searches</div>
+                                        <div style="font-size:26px;font-weight:900;color:{{siteAccentColor}};line-height:1;">{{siteSearchCount}}</div>
+                                    </div>
+                                </td>
+                                <td width="33%" style="padding:0 3px;">
+                                    <div style="background:#0d0d14;border:1px solid #1e1e2e;border-radius:12px;padding:14px;text-align:center;">
+                                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:#64748b;margin-bottom:6px;">Indexed</div>
+                                        <div style="font-size:26px;font-weight:900;color:#34d399;line-height:1;">{{siteDocumentCount}}</div>
+                                    </div>
+                                </td>
+                                <td width="33%" style="padding-left:6px;">
+                                    <div style="background:#0d0d14;border:1px solid #1e1e2e;border-radius:12px;padding:14px;text-align:center;">
+                                        <div style="font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:#64748b;margin-bottom:6px;">Languages</div>
+                                        <div style="font-size:26px;font-weight:900;color:#38bdf8;line-height:1;">{{siteLocaleCount}}</div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </table>
+
+                        <!-- Top Searches -->
+                        <div style="margin-top:20px;">
+                            <div style="font-size:11px;text-transform:uppercase;letter-spacing:1.2px;color:#64748b;margin-bottom:10px;font-weight:700;">
+                                &#x1F525; Top Searches
+                            </div>
+                            <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background:#0d0d14;border:1px solid #1e1e2e;border-radius:12px;overflow:hidden;">
+                                {{topSearchRows}}
+                            </table>
+                        </div>
+
+                        <!-- AI Summary (optional) -->
+                        {{siteSummary}}
+                    </td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+</table>

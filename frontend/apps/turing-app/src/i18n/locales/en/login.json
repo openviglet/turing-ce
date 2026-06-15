@@ -1,0 +1,41 @@
+{
+  "login": {
+    "welcomeBack": "Welcome back",
+    "signInDescription": "Sign in to access your dashboard",
+    "username": "Username",
+    "enterUsername": "Enter your username",
+    "password": "Password",
+    "enterPassword": "Enter your password",
+    "signIn": "Sign in",
+    "signingIn": "Signing in...",
+    "emptyFields": "Please enter both username and password",
+    "invalidCredentials": "Invalid credentials. Please try again.",
+    "loginFailed": "Login failed",
+    "heroTagline": "Enterprise Search Intelligence Platform powered by AI",
+    "featureSearch": "Semantic Search & Navigation",
+    "featureAi": "Generative AI with RAG",
+    "featureKnowledge": "Multi-source Knowledge Discovery",
+    "orContinueWith": "or continue with",
+    "continueWithGoogle": "Continue with Google",
+    "continueWithMicrosoft": "Continue with Microsoft",
+    "continueWithGithub": "Continue with GitHub",
+    "noAccount": "Don't have an account?",
+    "createAccount": "Create account"
+  },
+  "register": {
+    "title": "Create Account",
+    "description": "Fill in your details to create a new account.",
+    "firstName": "First Name",
+    "lastName": "Last Name",
+    "email": "Email",
+    "username": "Username",
+    "password": "Password",
+    "confirmPassword": "Confirm Password",
+    "createAccount": "Create Account",
+    "creating": "Creating...",
+    "backToLogin": "Back to login",
+    "requiredFields": "Username and password are required.",
+    "passwordMismatch": "Passwords do not match.",
+    "failed": "Registration failed. Please try again."
+  }
+}

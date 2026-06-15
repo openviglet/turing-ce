@@ -1,0 +1,56 @@
+# Dependabot configuration for the unified monorepo.
+# Frontend uses npm workspaces under `/frontend` — Dependabot discovers every
+# workspace (apps, packages) from the root `package.json` + `package-lock.json`,
+# so a single `npm` block covers turing-app, react-sdk, shared-types, and the
+# marketplace apps.
+#
+# https://help.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+
+version: 2
+updates:
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "2026.3"
+    open-pull-requests-limit: 15
+    groups:
+      java:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    target-branch: "2026.3"
+    open-pull-requests-limit: 15
+    ignore:
+      # Pinned across the whole workspace — each bump here affected multiple apps
+      # (Vite 8.0.9 + MF 1.14.5 + Rolldown produced REQUIRE_TLA on react-dom CJS);
+      # typescript is held back so tsc output stays stable for the SDK consumers.
+      # Unpin once upstream fixes land.
+      - dependency-name: "typescript"
+      - dependency-name: "vite"
+      - dependency-name: "@module-federation/vite"
+    groups:
+      frontend:
+        applies-to: version-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "2026.3"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      actions:
+        patterns:
+          - "*"

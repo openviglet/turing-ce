@@ -1,0 +1,299 @@
+{
+  "chatFlow": {
+    "title": "Chat Flow Builder",
+    "description": "Design conversational flows your AI agent will follow.",
+    "tabs": {
+      "settings": "Settings",
+      "diagram": "Diagram"
+    },
+    "sections": {
+      "general": {
+        "title": "General",
+        "description": "Identity and runtime guard rail strategy."
+      },
+      "trigger": {
+        "title": "Auto-trigger",
+        "description": "When and how often the LLM router should activate this flow."
+      }
+    },
+    "newInstance": "New Chat Flow",
+    "blankTitle": "No chat flows yet",
+    "blankDescription": "Create your first chat flow to script how your AI agent should drive a conversation.",
+    "saved": "Chat flow \"{{name}}\" was saved.",
+    "updated": "Chat flow \"{{name}}\" was updated.",
+    "notSaved": "Could not save chat flow \"{{name}}\".",
+    "deleted": "Chat flow \"{{name}}\" was deleted.",
+    "notDeleted": "Could not delete chat flow \"{{name}}\".",
+    "imported": "Chat flow \"{{name}}\" was loaded — review and save to persist.",
+    "importFailed": "Could not import chat flow — the file is not a valid export.",
+    "fields": {
+      "name": "Name",
+      "namePlaceholder": "e.g. Lead intake",
+      "description": "Description",
+      "descriptionPlaceholder": "Optional summary of what this flow does.",
+      "guardrailMethod": "Guard Rail Method",
+      "captureMode": "Capture Mode",
+      "captureModeJudgeOnly": "Capture Mode only applies when the Guard Rail Method is LLM as judge — the other methods have no judge to invert.",
+      "abandonHandoffMessage": "Abandonment Handoff",
+      "abandonHandoffMessagePlaceholder": "e.g. Before you go — would you like to talk to one of our consultants?",
+      "abandonHandoffMessageHint": "When the judge detects the visitor wants to quit, end with this offer to talk to a human (and flag the conversation for handoff) instead of just saying goodbye. Leave blank to keep the default close.",
+      "abandonHandoffMessageJudgeOnly": "Abandonment Handoff only applies when the Guard Rail Method is LLM as judge — the other methods have no abandonment signal.",
+      "triggerDescription": "Trigger Description",
+      "triggerDescriptionPlaceholder": "e.g. Use this flow when the user wants to schedule a meeting or asks about appointment availability.",
+      "triggerDescriptionHint": "Natural-language hint the LLM router uses to decide whether a user message should activate this flow. Leave blank to disable auto-trigger.",
+      "helpWriteTrigger": "Help me write",
+      "helpWriteTriggerTitle": "Help me write the trigger description",
+      "helpWriteTriggerDescription": "Describe in your own words when this flow should kick in — example intents, user phrasings, when it should NOT fire. The LLM will rewrite a concise trigger description the router can use.",
+      "helpWriteTriggerPlaceholder": "e.g. Activate when the user wants to order pizza, mentions toppings, sizes, delivery or pickup. Do NOT trigger on general menu questions or complaints.",
+      "helpWriteTriggerHint": "Tip: also describe what should NOT trigger this flow, not only what should.",
+      "helpWriteTriggerGenerate": "Generate description",
+      "triggerMode": "Trigger Mode",
+      "triggerLanguage": "Trigger language"
+    },
+    "triggerModes": {
+      "ONCE": {
+        "label": "Once per conversation",
+        "description": "After this flow ends, the router will not re-trigger it in the same conversation."
+      },
+      "ALWAYS": {
+        "label": "Always re-trigger",
+        "description": "Whenever the user message matches the trigger description, the flow restarts from its first step."
+      }
+    },
+    "triggerLanguages": {
+      "AUTO": {
+        "label": "Auto-detect",
+        "description": "Router detects the trigger language per route. Good default — only override if you notice EN flows under-matching."
+      },
+      "PT": {
+        "label": "Portuguese",
+        "description": "Tokenize with the Portuguese analyzer (light stemming, PT stopwords). Pick when the trigger is written in Portuguese."
+      },
+      "EN": {
+        "label": "English",
+        "description": "Tokenize with the English analyzer (Porter stemming, EN stopwords). Pick when the trigger is written in English."
+      }
+    },
+    "guardrailMethods": {
+      "LLM_JUDGE": {
+        "label": "LLM as judge (recommended)",
+        "description": "Most reliable in production. After each turn, a focused LLM call returns a JSON verdict (on-topic, collected value, ready to advance). The judge runs without chat history or tool noise, so even smaller models follow the contract reliably. ~1 extra LLM call per turn (~200 extra tokens)."
+      },
+      "HEURISTIC": {
+        "label": "Heuristic (cheapest)",
+        "description": "Prompt-only contract + regex/keyword heuristics. No extra LLM calls. Reliable for nodes with strict validation rules (email, phone, number, date, URL). For free-text nodes (name, flavor, generic question) it accepts any user reply as the value — fragile in real conversations."
+      },
+      "STRUCTURED_OUTPUT": {
+        "label": "Structured output (single call)",
+        "description": "Tries to bundle the user-facing reply and the verdict in one JSON call. Sounds ideal, but smaller models (GPT-4o-mini) often ignore the JSON contract when chat history grows or many tools are active, and fall back to a judge call anyway — costing more than LLM as judge alone. Worth picking only with top-tier models (GPT-4o full, Claude 3.7 Sonnet)."
+      }
+    },
+    "captureModes": {
+      "VALIDATE_THEN_CAPTURE": {
+        "label": "Validate then capture (default)",
+        "description": "Legacy behaviour. The judge runs first and gates the capture — the slot is written only when the judge accepts the value. A rejected reply leaves the slot empty and keeps the cursor on the step (the classic 'flow stuck on a null slot'). Use onJudgeReject on a step to soften this per-node."
+      },
+      "CAPTURE_THEN_GATE": {
+        "label": "Capture first, validation gates",
+        "description": "The user reply is written to the slot before the judge runs, so the slot is never empty after an answer. The judge becomes advisory — it refines the value and writes a <slot>__confidence grade but can no longer block a value that passes the step's validation rule. A failing validation rule (email, phone, CPF…) still re-prompts, now with the attempt captured and confidence=low."
+      },
+      "CAPTURE_THEN_GRADE": {
+        "label": "Capture first, always advance",
+        "description": "Capture-then-grade: the reply is written to the slot and the flow always advances unless the user abandons. Both the validation rule and the judge are purely advisory — they only set the <slot>__confidence grade. Maximum 'never stall', but a downstream step must decide what to do with low-confidence captures."
+      }
+    },
+    "errors": {
+      "nameRequired": "Please give the chat flow a name before saving."
+    },
+    "actions": {
+      "save": "Save",
+      "saving": "Saving…",
+      "preview": "Preview",
+      "exportJson": "Export JSON",
+      "importJson": "Import JSON"
+    },
+    "selector": {
+      "label": "Chat Flow",
+      "auto": "Auto-detect",
+      "placeholder": "Pick a flow"
+    },
+    "reset": {
+      "label": "Restart flow",
+      "done": "Flow restarted — your next message starts at the first step.",
+      "failed": "Could not restart the flow."
+    },
+    "zoom": "Zoom",
+    "palette": {
+      "title": "Components",
+      "hint": "Drag a component onto the canvas, then connect the handles to wire the flow.",
+      "start": "Start",
+      "end": "End",
+      "aiQuestion": "AI Question",
+      "formCapture": "Form Capture",
+      "condition": "Condition",
+      "functionCall": "Function Call",
+      "webhook": "Webhook",
+      "subFlow": "Sub Flow",
+      "subFlowSwitch": "Sub-flow Switch",
+      "persona": "Persona Switch",
+      "switch": "Switch",
+      "slot": "Slot",
+      "writeSlot": "Write Slot (templated)",
+      "scheduleAgent": "Scheduled Routine",
+      "suspend": "Suspend",
+      "planningStep": "Planning Step",
+      "iteratePlan": "Iterate Plan"
+    },
+    "properties": {
+      "header": "Node Properties",
+      "empty": "Select a node to edit its properties.",
+      "close": "Close",
+      "stepName": "Step Name",
+      "stepNamePlaceholder": "e.g. ASK USER",
+      "aiInstruction": "AI System Instruction",
+      "aiInstructionPlaceholder": "Ask the user a question and capture the answer. Expected Output: the value you want to store.",
+      "aiInstructionHint": "Prompt forwarded to Spring AI when this step runs.",
+      "outputVariable": "Output Variable",
+      "outputVariablePlaceholder": "Select a slot…",
+      "outputVariableEmpty": "No slots defined for this agent. Add one under Slots in the sidebar first.",
+      "outputVariableHint": "Picks from the agent's typed-slot catalogue so the captured value lands in a stable schema.",
+      "overrideExistingValue": "Always ask (override existing value)",
+      "overrideExistingValueHint": "When unchecked, the engine skips this step if the slot is already filled. Check to always ask and overwrite the previous value.",
+      "onJudgeReject": "When the judge rejects the answer",
+      "onJudgeRejectHint": "Only applies when the agent's guardrailMethod is LLM_JUDGE. Default reprompts the user when the judge produced a substantive redirect; advance_with_literal force-captures the user message after retry; block always trusts the judge.",
+      "onJudgeRejectOptions": {
+        "reprompt": "Reprompt (default) — trust judge redirect",
+        "advance_with_literal": "Advance with literal — force-capture user message",
+        "block": "Block — never force-capture, always reprompt"
+      },
+      "toolsEnabled": "Allow tool calls on this node",
+      "toolsEnabledHint": "When off, the agent's tool callbacks (MCP / native / custom) are stripped on this node. Use to gate the LLM from preemptively calling a tool before a slot is captured. Replaces the legacy \"NÃO CHAME NENHUMA TOOL\" sentinel in aiInstruction.",
+      "requiredTools": "Required tools (one per line)",
+      "requiredToolsHint": "Tool names that must reach the LLM on this node, even when the tool-prefilter would otherwise drop them due to low similarity with the user message. Use one name per line — must match the @Tool name, MCP tool name, or custom-tool name.",
+      "nodeAbTest": {
+        "experimentKey": "Per-node A/B experiment key",
+        "experimentKeyHint": "Set a key to A/B this single node's instruction. Each conversation is stickily assigned one arm below — no need to duplicate the whole flow. Independent from the flow-level A/B on the Settings tab.",
+        "variants": "Variants",
+        "addVariant": "Add variant",
+        "removeVariant": "Remove variant",
+        "empty": "No variants yet. Add at least two arms to run the test.",
+        "labelPlaceholder": "Arm name (e.g. control / punchy)",
+        "weight": "Weight",
+        "instructionPlaceholder": "Instruction / template override — leave blank for the control arm (keeps the base text).",
+        "variantsHint": "Weights are relative (50/50 ≡ 1/1). An arm with weight 0 is paused. A blank override keeps the node's authored text — use it for the control arm. On functionCall / scheduleAgent nodes the override swaps the tool input / routine payload template instead of a question."
+      },
+      "functionName": "Function Call",
+      "toolSource": "Tool Source",
+      "toolSourceOptions": {
+        "NATIVE": "Turing native functions",
+        "MCP": "MCP Server"
+      },
+      "nativeTool": "Tool Calling",
+      "nativeToolPlaceholder": "Pick a Turing native tool",
+      "nativeToolHint": "Spring AI @Tool method exposed by the Turing backend.",
+      "mcpServer": "MCP Server",
+      "mcpServerPlaceholder": "Pick an MCP server",
+      "mcpServerHint": "All tools exposed by the selected MCP server will be available to the LLM.",
+      "scheduleAgent": {
+        "routineId": "Routine",
+        "routineIdPlaceholder": "Pick a routine…",
+        "routineIdEmpty": "No routines defined. Create one under Routines first.",
+        "routineIdHint": "Configured routine to run asynchronously. The flow pauses on this node until the routine writes the output slot (or the timeout expires).",
+        "payloadTemplate": "Payload Template (JSON)",
+        "payloadTemplateHint": "JSON template passed to the routine. {{slotName}} placeholders are interpolated from the conversation's slot map before dispatch. Leave blank to send {}.",
+        "outputVariable": "Output Slot",
+        "timeoutMs": "Timeout (ms)",
+        "timeoutMsHint": "Per-node override (milliseconds). Leave blank to use the routine's default. On expiry the engine takes the 'timeout' outgoing edge (or the first edge if none is wired)."
+      },
+      "webhook": {
+        "webhook": "Webhook",
+        "webhookPlaceholder": "Pick a webhook…",
+        "webhookEmpty": "No webhooks defined. Create one under Webhooks first.",
+        "webhookHint": "Fires the selected webhook (CRM push) when the flow reaches this node. The target URL, method, headers, payload template and credentials come from the webhook's own configuration."
+      },
+      "continueOnFailure": "Continue on failure (try/catch)",
+      "continueOnFailureHint": "When checked, a tool/routine failure routes the flow along the outgoing edge whose handle is 'failure' — wire an alternative path for graceful recovery (apologize, ask user to re-input, escalate to handoff). When unchecked, the engine logs the error and advances to the first outgoing edge (legacy behavior).",
+      "condition": "Condition Expression",
+      "subFlow": "Sub Flow",
+      "subFlowPlaceholder": "Pick a chat flow",
+      "subFlowEmpty": "No other chat flows are available for this agent.",
+      "subFlowHint": "When this step runs, control is handed off to the selected chat flow within the same AI agent.",
+      "persona": "Active Persona",
+      "personaPlaceholder": "Pick a persona from the agent's catalog",
+      "personaEmpty": "This agent has no personas in its catalog. Add some on the agent's Personas page.",
+      "personaHint": "When this step runs, the conversation immediately switches to this persona's voice. The change persists until another Persona node is reached or the conversation ends.",
+      "switchVariable": "Switch Variable",
+      "switchVariablePlaceholder": "Select a slot…",
+      "switchVariableEmpty": "No slots defined for this agent. Add one under Slots in the sidebar first.",
+      "switchVariableHint": "Picks the typed slot the engine reads to route this Switch — keep one slot per branching variable.",
+      "switchOverrideHint": "When checked, the Switch re-evaluates the slot even if it already had a value; otherwise it reuses the previously captured value as-is.",
+      "switchOptions": "Switch Options",
+      "switchOptionsHint": "Each option becomes a separate handle on the right of the node — wire it to a different downstream flow.",
+      "subFlowSwitchOptionsHint": "Each option binds a label-match to a sub-flow descent. The wildcard outgoing edge fires when no option matches or the matched option has no sub-flow selected.",
+      "subFlowSwitchOptionPlaceholder": "Pick a sub-flow for this option…",
+      "switchOptionsEmpty": "No options yet — add one to expose a branch.",
+      "switchOptionPlaceholder": "e.g. Option {{index}}",
+      "switchAddOption": "Add option",
+      "switchRemoveOption": "Remove option",
+      "validationRule": "Validation Rules",
+      "validationNone": "None",
+      "validation": {
+        "none": "None",
+        "email": "Email",
+        "phone": "Phone number",
+        "url": "URL",
+        "number": "Number",
+        "date": "Date"
+      },
+      "slotOperation": "Operation",
+      "slotOperationHint": "Set writes a literal value to the chosen slot; Delete removes the slot from the conversation state.",
+      "slotOperationOptions": {
+        "SET": "Set value",
+        "DELETE": "Delete value"
+      },
+      "slotName": "Slot",
+      "slotNamePlaceholder": "Select a slot…",
+      "slotNameEmpty": "No slots defined for this agent. Add one under Slots in the sidebar first.",
+      "slotNameHint": "Slot the engine writes to (or deletes). Must be declared on the agent's slot catalogue.",
+      "slotValue": "Value",
+      "slotValuePlaceholder": "Literal value to write",
+      "slotValueHint": "Stored verbatim in the conversation state; downstream Switch or AI Question nodes can read it.",
+      "slotOverrideHint": "When checked, overwrite the slot even if it already had a value; otherwise the node no-ops to preserve the existing value."
+    },
+    "preview": {
+      "title": "Chat Preview",
+      "close": "Close preview",
+      "empty": "Add a Start node and at least one step to see the preview.",
+      "bot": "Assistant",
+      "user": "User",
+      "footer": "Preview walks the flow following the first outgoing edge of each node. It does not execute tools or LLMs."
+    },
+    "aiChat": {
+      "breadcrumb": "Create with AI",
+      "panelTitle": "AI Authoring",
+      "panelSubtitle": "Describe the conversation and I'll wire the flow",
+      "placeholder": "e.g. Build a flow for booking a hotel: ask the user for the destination city, check-in/out dates, and number of guests, validate each value, then call a function to look up availability and end with a confirmation summary.",
+      "empty": "Start by describing the conversation you want to script. I'll add nodes, connect branches, and pick guard rails as we chat.",
+      "untitled": "Untitled flow",
+      "tipTitle": "Tell me what your bot should do",
+      "tipDesc": "Describe the goal, the questions to ask, what to validate, and any external lookups. I'll build a flow with start/end, AI questions, conditions, and function calls.",
+      "metaTitle": "Flow metadata",
+      "metaDesc": "Routing and runtime configuration for this flow.",
+      "guardrail": "Guard rail",
+      "triggerMode": "Trigger mode",
+      "enabled": "Enabled",
+      "nodeCount": "Nodes",
+      "triggerDescription": "Trigger description",
+      "no": "No",
+      "yes": "Yes",
+      "graphTitle": "Flow steps",
+      "graphDesc": "Ordered preview of nodes and their branches. The visual editor opens after Save.",
+      "nameRequired": "Please give the chat flow a name before saving.",
+      "emptyFlow": "Add at least one step before saving.",
+      "saved": "Chat flow \"{{name}}\" was saved.",
+      "saveFailed": "Could not save chat flow.",
+      "saving": "Saving…",
+      "saveAndOpen": "Save & Open in Editor"
+    }
+  }
+}

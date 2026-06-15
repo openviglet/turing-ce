@@ -1,0 +1,24 @@
+{
+  "intent": {
+    "title": "Intent",
+    "blankTitle": "You don't have any intents yet.",
+    "blankDescription": "Create an intent to group suggested prompts for the chat.",
+    "newInstance": "New Intent",
+    "deleted": "The \"{{name}}\" intent was deleted",
+    "notDeleted": "The \"{{name}}\" intent was not deleted",
+    "nav": {
+      "settings": "Settings"
+    },
+    "settings": {
+      "title": "Settings",
+      "description": "General information, actions (prompts), and status."
+    },
+    "aiChat": {
+      "breadcrumb": "Create with AI",
+      "panelTitle": "AI Authoring",
+      "panelSubtitle": "Describe the intent and I'll fill the form",
+      "placeholder": "e.g. Create an intent for a university enrollment chat with quick actions like 'Show available courses', 'How to apply', 'Tuition prices'.",
+      "empty": "Start by describing what this intent is for. The form on the left will fill in as we chat."
+    }
+  }
+}

@@ -1,0 +1,444 @@
+# =============================================================================
+# Turing ES — Application Configuration
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Turing
+# ---------------------------------------------------------------------------
+turing:
+  ai.crypto.key: sample-key-for-crypto
+  allowedOrigins: http://localhost:4200,http://localhost:5173
+  permissions: false
+  tenancy:
+    enabled: false
+  # T245 / §XIII — Turing as an MCP server. The endpoint itself is toggled by
+  # spring.ai.mcp.server.enabled (below); this block carries the Turing-specific
+  # governance on top of it. loopback-only is the T245 trust boundary: until the
+  # T246 OAuth 2.1 resource-server gate lands, /mcp answers loopback requests
+  # only. Leave it true for any remote deployment until auth is wired.
+  mcp-server:
+    loopback-only: true
+    # T246 — when true, /mcp requires a valid Keycloak JWT bearer token
+    # (spring.security.oauth2.resourceserver.jwt.*) and scopes tool execution to
+    # the token's authorities. Default false keeps the T245 loopback-only dev
+    # posture. A remote deployment sets require-auth=true + loopback-only=false.
+    require-auth: false
+    # T253 — gated write/ingestion tools (index_document, deindex_document,
+    # reindex_site). Default false: they are not even registered. When true they
+    # appear but still require the mcp:write scope per call. Read-only by default.
+    write-enabled: false
+  keycloak: false
+  keycloak-admin-id:
+  authentication:
+    thirdparty: true
+    new-user: true
+  url: http://localhost:2700
+  open-browser: true
+  jms.concurrency: 1-1
+  solr:
+    timeout: 30000
+    cloud: false
+    # When enabled=true and endpoint is set, Turing uses this endpoint directly
+    # and the SE instance catalog becomes read-only (no new Solr instances can be
+    # created from the UI/API). Leave enabled=false to keep the default JPA mode.
+    enabled: false
+    endpoint:
+    commit:
+      within: 10000
+      enabled: false
+  elasticsearch:
+    timeout: 30000
+  search:
+    metrics.enabled: true
+    cache:
+      ttl:
+        seconds: 86400000
+      enabled: false
+  storage:
+    type: FILESYSTEM
+    filesystem:
+      path: ./store/assets
+    minio:
+      endpoint: http://localhost:9000
+      access-key: admin
+      secret-key: minha_senha_forte
+      bucket: turing-assets
+  code-interpreter:
+    # Execution mode is chosen at runtime in Console -> Global Settings ->
+    # Code Interpreter (NATIVE host subprocess, the default, or DOCKER). The
+    # properties below only apply when the mode is DOCKER and are safe to
+    # leave untouched on NATIVE deployments.
+    docker:
+      executable: docker        # Docker CLI binary (must be on PATH)
+      network: none             # none = no egress; or a named docker network
+      memory: 512m              # hard RAM cap per execution
+      cpus: "1.0"               # CPU quota per execution
+      pids-limit: 128           # max PIDs (fork-bomb containment)
+      probe-timeout-seconds: 8  # timeout for the "Check Docker" availability probe
+    native:
+      # Per-execution CPU/RAM caps for the NATIVE host-subprocess path (Linux
+      # only). DOCKER mode already caps via the container runtime, so these
+      # apply only when the execution mode is NATIVE. Disabled by default to
+      # preserve exact legacy behavior; enable to stop a runaway script (e.g.
+      # `[x*x for x in range(10**9)]`) from exhausting host RAM before the
+      # wall-clock timeout fires.
+      limits:
+        enabled: false          # opt-in; false = legacy (timeout is the only guard)
+        memory-max: 1g          # hard RAM cap (prlimit --as / cgroup MemoryMax)
+        cpu-seconds: 35         # CPU-time cap (prlimit --cpu); <=0 disables
+        limiter: auto           # auto | prlimit | systemd-run | none
+    warm-pool:
+      # Pre-warmed interpreter pool for the NATIVE path (T82). Keeps a few host
+      # Python interpreters booted-and-blocked so a frequently-invoked tool
+      # skips the ~200ms cold boot each call. Workers are single-use (one
+      # execution then exit — no cross-tenant state leak), refilled async.
+      # NATIVE only; automatically bypassed in DOCKER mode and whenever the
+      # native limits above are enabled (a running worker can't be wrapped by
+      # prlimit/systemd-run). Opt-in; false = legacy cold-spawn-per-call.
+      enabled: false
+      size: 2                   # interpreters kept booted and ready
+  git:
+    server: false
+  marketplace:
+    enabled: true
+    url: https://turing.viglet.org/marketplace/marketplace.json
+  genai:
+    reindex:
+      # Number of documents indexed in parallel during a RAG reindex.
+      # Embedding HTTP calls are I/O-bound, so a small fixed pool fully utilizes
+      # the embedding API without saturating typical rate limits. Set to 1 to
+      # force sequential indexing (useful for debugging or rate-limited APIs).
+      parallel: 4
+  chat:
+    session:
+      # Cookie name minted by the React SDK to identify a returning visitor.
+      # Reused as the chat conversationId so the value also bounds how long a
+      # conversation can be resumed without resetting flow state.
+      cookie-name: TUR_SESSION
+      # Cookie lifetime in seconds. Default: 30 days (2592000).
+      ttl-seconds: 2592000
+    # Note (post-T16): `turing.chat.inverted-harness.enabled` and
+    # `turing.chat.judge-retry.enabled` no longer exist. The inverted
+    # harness (advance before LLM, single LLM call, no regen) and the
+    # single-shot judge (onJudgeReject as sole reject driver) are the
+    # only paths. The flags were transitional during T9-T14 and were
+    # removed in T16 along with the legacy code they gated.
+  # ---------------------------------------------------------------------------
+  # Resilience for outbound calls (LLM providers + search engines)
+  # ---------------------------------------------------------------------------
+  # Each group ("llm", "search-engine") has shared `defaults` and per-type
+  # `overrides`. Null fields in an override fall back to defaults. Set
+  # `turing.resilience.enabled: false` to bypass the entire pipeline globally.
+  resilience:
+    enabled: true
+    llm:
+      enabled: true
+      defaults:
+        retry:
+          max-attempts: 3
+          wait-duration: 1s
+          exponential-backoff-multiplier: 2.0
+          retry-on-exceptions:
+            - java.io.IOException
+            - java.net.SocketTimeoutException
+        circuit-breaker:
+          failure-rate-threshold: 50
+          slow-call-rate-threshold: 80
+          slow-call-duration-threshold: 30s
+          sliding-window-size: 20
+          minimum-number-of-calls: 10
+          wait-duration-in-open-state: 30s
+          permitted-number-of-calls-in-half-open-state: 3
+        time-limiter:
+          timeout-duration: 60s
+          cancel-running-future: true
+      overrides:
+        openai:
+          time-limiter:
+            timeout-duration: 90s
+        ollama:
+          time-limiter:
+            timeout-duration: 300s
+        gemini:
+          circuit-breaker:
+            wait-duration-in-open-state: 60s
+    search-engine:
+      enabled: true
+      defaults:
+        retry:
+          max-attempts: 3
+          wait-duration: 500ms
+          exponential-backoff-multiplier: 2.0
+          retry-on-exceptions:
+            - java.io.IOException
+            - java.net.SocketTimeoutException
+            - java.net.http.HttpTimeoutException
+            - org.apache.solr.client.solrj.SolrServerException
+            - com.viglet.turing.solr.TurSolrDocumentHandler$TurSolrBatchIndexException
+        circuit-breaker:
+          failure-rate-threshold: 50
+          slow-call-duration-threshold: 5s
+          sliding-window-size: 30
+          minimum-number-of-calls: 20
+          wait-duration-in-open-state: 15s
+          permitted-number-of-calls-in-half-open-state: 5
+        time-limiter:
+          timeout-duration: 30s
+          cancel-running-future: true
+      overrides:
+        lucene:
+          # Embedded engine; loosen circuit breaker since failures are rare and local.
+          circuit-breaker:
+            minimum-number-of-calls: 50
+          time-limiter:
+            timeout-duration: 10s
+  logging:
+    engine: none        # none | mongodb | redis
+    database: turingLog
+    collection:
+      server: server
+      aem: aem
+      indexing: indexing
+      # Chat memory documents (one per conversationId) written by
+      # TurChatMemoryService when the agent has chatMemoryEnabled=true.
+      # Mongo: collection name. Redis: key prefix → "<chat>:<conversationId>".
+      chat: chat
+    purge:
+      days: 30
+  mongodb:
+    enabled: false
+    uri: mongodb://localhost:27017
+  redis:
+    enabled: false
+    uri: redis://localhost:6379/0
+
+# ---------------------------------------------------------------------------
+# Spring
+# ---------------------------------------------------------------------------
+spring:
+  datasource.hikari:
+    maximum-pool-size: 20
+    minimum-idle: 5
+    idle-timeout: 600000
+    pool-name: TurConnectionPool
+  jmx.enabled: true
+  profiles:
+    active: production
+  # T245 / §XIII — Turing as an MCP server. OFF by default: when enabled=false
+  # the Spring AI MCP server auto-configuration does not activate, there is no
+  # /mcp endpoint, and the deployment is unchanged. Flip enabled=true to publish
+  # the decorated Turing tool catalog over Streamable HTTP at /mcp. Keep
+  # turing.mcp-server.loopback-only=true (above) until the T246 OAuth 2.1 gate
+  # is wired for any non-loopback exposure.
+  ai:
+    mcp:
+      server:
+        enabled: false
+        protocol: STREAMABLE
+        name: turing-es
+        version: 2026.3.1
+        instructions: >-
+          Viglet Turing ES — enterprise search intelligence. Use these tools to
+          discover indexed sites, inspect their fields, and run semantic/hybrid
+          searches over the customer's enterprise content, with citations.
+  h2:
+    console:
+      enabled: false
+      path: /h2
+      settings:
+        web-allow-others: true
+  datasource:
+    url: jdbc:h2:file:./store/db/turingDB;DATABASE_TO_UPPER=false;CASE_INSENSITIVE_IDENTIFIERS=true
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.yaml
+    enabled: true
+    default-schema: PUBLIC
+  jpa:
+    properties:
+      hibernate:
+        "[globally_quoted_identifiers]": true
+        "[format_sql]": false
+        "[enable_lazy_load_no_trans]": true
+        "[generate_statistics]": false
+      "[jakarta.persistence.sharedCache.mode]": ALL
+    hibernate:
+      ddl-auto: none
+    show-sql: false
+  jackson:
+    mapper:
+      "[DEFAULT_VIEW_INCLUSION]": true
+  thymeleaf:
+    mode: HTML
+    check-template: true
+    check-template-location: true
+    prefix: classpath:public/
+    suffix: .html
+  artemis:
+    mode: embedded
+    broker-url: localhost:61616
+    embedded:
+      enabled: true
+      persistent: true
+      data-directory: store/queue
+      queues: indexing.queue
+    pool:
+      max-connections: 10
+  jms:
+    template:
+      default-destination: indexing.queue
+  servlet:
+    multipart:
+      max-file-size: 1024MB
+      max-request-size: 1024MB
+      # Skip eager parsing so the integration proxy ({id}/** catch-all)
+      # can forward multipart bodies via getInputStream() to Dumont without
+      # the parts having been consumed. Endpoints that use @RequestPart still
+      # work — Spring parses on demand at parameter binding time.
+      resolve-lazily: true
+  mvc:
+    async:
+      request-timeout: 3600000
+  output:
+    ansi:
+      enabled: always
+  graphql:
+    graphiql:
+      enabled: true
+      path: /graphiql
+    http.path: /graphql
+    cors:
+      allowed-origins: ${turing.allowedOrigins}
+      allowed-methods: GET,POST
+      allowed-headers: "*"
+
+  # -------------------------------------------------------------------------
+  # OAuth2 Social Login (uncomment to enable)
+  # -------------------------------------------------------------------------
+  # Redirect URI pattern: {baseUrl}/login/oauth2/code/{registrationId}
+  # Example: http://localhost:2700/login/oauth2/code/google
+  #
+  # security:
+  #   oauth2:
+  #     client:
+  #       registration:
+  #         google:
+  #           client-id: ${GOOGLE_CLIENT_ID}
+  #           client-secret: ${GOOGLE_CLIENT_SECRET}
+  #         github:
+  #           client-id: ${GITHUB_CLIENT_ID}
+  #           client-secret: ${GITHUB_CLIENT_SECRET}
+  #         microsoft:
+  #           client-id: ${MICROSOFT_CLIENT_ID}
+  #           client-secret: ${MICROSOFT_CLIENT_SECRET}
+  #           scope: openid,profile,email
+  #           authorization-grant-type: authorization_code
+  #           redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+  #         keycloak:
+  #           client-id: ${KEYCLOAK_CLIENT_ID}
+  #           client-secret: ${KEYCLOAK_CLIENT_SECRET}
+  #           scope: openid
+  #           authorization-grant-type: authorization_code
+  #           redirect-uri: "{baseUrl}/login/oauth2/code/{registrationId}"
+  #       provider:
+  #         microsoft:
+  #           issuer-uri: https://login.microsoftonline.com/common/v2.0
+  #         keycloak:
+  #           issuer-uri: http://localhost:8080/realms/demo
+
+# ---------------------------------------------------------------------------
+# Server
+# ---------------------------------------------------------------------------
+server:
+  port: ${PORT:2700}
+  servlet:
+    session:
+      cookie:
+        name: TURJSESSIONID
+  compression:
+    enabled: true
+    mime-types: application/json,text/css,application/javascript
+    min-response-size: 2048
+  tomcat:
+    accesslog:
+      enabled: false
+      suffix: .log
+      prefix: access_log
+      file-date-format: .yyyy-MM-dd
+      directory: logs
+    basedir: store
+    threads:
+      max: 600
+    max-swallow-size: 200MB
+    max-http-form-post-size: 200MB
+    maxHttpResponseHeaderSize: 800KB
+
+# ---------------------------------------------------------------------------
+# API Documentation
+# ---------------------------------------------------------------------------
+springdoc:
+  pathsToMatch: /api/**
+  swagger-ui:
+    path: /swagger-ui.html
+
+# ---------------------------------------------------------------------------
+# Management & Observability
+# ---------------------------------------------------------------------------
+# Metrics: Prometheus scrape endpoint at /actuator/prometheus.
+# Tracing: traces are exported to OTLP if OTEL_EXPORTER_OTLP_ENDPOINT is set;
+#   sampling defaults to 10% of requests, override with
+#   management.tracing.sampling.probability.
+# Set turing.observability.tracing.enabled=false to disable spans entirely.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  metrics:
+    tags:
+      application: turing-es
+    distribution:
+      percentiles-histogram:
+        "[turing.llm.calls]": true
+        "[turing.search.calls]": true
+        # T32 / §IV.7 — emit histogram buckets so Grafana can compute p95/p99
+        # via `histogram_quantile(...)` on the chat-pipeline timer (now
+        # tagged with stage=chat.setup.{decrypt,model,flow,persona,tools,compose}
+        # in addition to the parent chat.{total,setup,llm.call,post,advance,regen})
+        # and on the per-turn T30 / T29 retrieval timers. Without these,
+        # only `_count` + `_sum` are exposed and dashboards can chart
+        # averages but not percentiles.
+        "[turing.chat.pipeline]": true
+        "[turing.chat.memory.retrieval]": true
+        "[turing.chat.tool.prefilter]": true
+  tracing:
+    sampling:
+      probability: 0.1
+  observations:
+    annotations:
+      enabled: true
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  config: classpath:logback-spring.xml
+  level:
+    org:
+      springframework: INFO
+      apache: INFO
+      "[apache.activemq]": ERROR
+    com:
+      viglet: INFO
+    dev:
+      langchain4j: INFO
+      ai4j:
+        openai4j: INFO
+  file:
+    name: store/logs/turing.log
+  logback:
+    rollingpolicy:
+      max-file-size: 25MB
+      max-history: 10

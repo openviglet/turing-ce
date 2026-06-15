@@ -1,0 +1,41 @@
+{
+  "login": {
+    "welcomeBack": "Bem-vindo de volta",
+    "signInDescription": "Faça login para acessar seu painel",
+    "username": "Usuário",
+    "enterUsername": "Digite seu usuário",
+    "password": "Senha",
+    "enterPassword": "Digite sua senha",
+    "signIn": "Entrar",
+    "signingIn": "Entrando...",
+    "emptyFields": "Por favor, preencha usuário e senha",
+    "invalidCredentials": "Credenciais inválidas. Tente novamente.",
+    "loginFailed": "Falha no login",
+    "heroTagline": "Plataforma de Inteligência em Busca Empresarial com IA",
+    "featureSearch": "Busca Semântica e Navegação",
+    "featureAi": "IA Generativa com RAG",
+    "featureKnowledge": "Descoberta de Conhecimento Multi-fonte",
+    "orContinueWith": "ou continue com",
+    "continueWithGoogle": "Continuar com Google",
+    "continueWithMicrosoft": "Continuar com Microsoft",
+    "continueWithGithub": "Continuar com GitHub",
+    "noAccount": "Não tem uma conta?",
+    "createAccount": "Criar conta"
+  },
+  "register": {
+    "title": "Criar Conta",
+    "description": "Preencha seus dados para criar uma nova conta.",
+    "firstName": "Nome",
+    "lastName": "Sobrenome",
+    "email": "E-mail",
+    "username": "Usuário",
+    "password": "Senha",
+    "confirmPassword": "Confirmar Senha",
+    "createAccount": "Criar Conta",
+    "creating": "Criando...",
+    "backToLogin": "Voltar ao login",
+    "requiredFields": "Usuário e senha são obrigatórios.",
+    "passwordMismatch": "As senhas não coincidem.",
+    "failed": "Falha no cadastro. Tente novamente."
+  }
+}
