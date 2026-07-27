@@ -22,7 +22,6 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.DefaultToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.security.core.Authentication;
@@ -30,6 +29,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import com.viglet.turing.genai.TurChatToolOptions;
 import com.viglet.turing.genai.TurToolExecutionLoop;
 import com.viglet.turing.genai.tool.TurCustomToolCallbackService;
 import com.viglet.turing.genai.tool.TurDslToolService;
@@ -296,7 +296,12 @@ public class TurSkillRunnerService {
             if (StringUtils.hasText(conversationId)) {
                 toolContext.put(TurCustomToolCallbackService.TOOL_CONTEXT_CONVERSATION_ID, conversationId);
             }
-            var optionsBuilder = DefaultToolCallingChatOptions.builder().toolCallbacks(tools);
+            // Seed from the provider's own concrete options — Spring AI 2.0.0
+            // hard-casts prompt.getOptions() to the provider type, so a generic
+            // DefaultToolCallingChatOptions throws ClassCastException. See
+            // TurChatToolOptions.
+            var optionsBuilder = TurChatToolOptions.builderFrom(chatModel)
+                    .toolCallbacks(tools);
             if (!toolContext.isEmpty()) {
                 optionsBuilder.toolContext(toolContext);
             }
@@ -308,11 +313,7 @@ public class TurSkillRunnerService {
             ChatResponse response = toolExecutionLoop.call(chatModel,
                     new Prompt(messages, optionsBuilder.build()));
 
-            try {
-                tokenUsageService.recordUsage(llmInstance, response, resolveUsername());
-            } catch (RuntimeException usageError) {
-                log.debug("[run_skill] token usage record failed: {}", usageError.getMessage());
-            }
+            recordUsageSafely(llmInstance, response);
 
             String text = response == null || response.getResult() == null
                     ? null
@@ -325,6 +326,16 @@ public class TurSkillRunnerService {
             log.warn("[run_skill] skill='{}' conv={} failed: {}",
                     skill.getName(), conversationId, e.getMessage());
             return "Failed to run skill '" + skill.getName() + "': " + e.getMessage();
+        }
+    }
+
+    /** Records token usage, swallowing (and logging) any failure so it never breaks the skill run. */
+    private void recordUsageSafely(TurLLMInstance llmInstance, ChatResponse response) {
+        try {
+            tokenUsageService.recordUsage(llmInstance, response, resolveUsername(),
+                    null, com.viglet.turing.observability.TurMeterNames.STAGE_CHAT_SKILL);
+        } catch (RuntimeException usageError) {
+            log.debug("[run_skill] token usage record failed: {}", usageError.getMessage());
         }
     }
 

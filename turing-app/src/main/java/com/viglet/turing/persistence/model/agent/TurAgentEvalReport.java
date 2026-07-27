@@ -14,7 +14,7 @@ import java.io.Serializable;
 import java.time.LocalDateTime;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.viglet.turing.persistence.utils.TurAssignableUuidGenerator;
+import com.viglet.core.jpa.VigletAssignableUuidGenerator;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -45,7 +45,7 @@ public class TurAgentEvalReport implements Serializable {
     private static final long serialVersionUID = 1L;
 
     @Id
-    @TurAssignableUuidGenerator
+    @VigletAssignableUuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
     private String id;
 
@@ -85,6 +85,25 @@ public class TurAgentEvalReport implements Serializable {
      */
     @Column(name = "regressed", nullable = false)
     private boolean regressed;
+
+    /**
+     * T592 — true when any case in this run deferred to a HUMAN grader, so the
+     * run is amber (awaiting review) rather than green/red until a reviewer
+     * decides. A pending run is never the green baseline.
+     */
+    @Column(name = "pendingReview", nullable = false)
+    private boolean pendingReview;
+
+    /**
+     * T598 — the bound dataset (if any) + the dataset version this run scored
+     * against, so a regression comparison knows whether the dataset itself
+     * drifted between runs. {@code datasetVersion} is 0 for inline-case runs.
+     */
+    @Column(name = "datasetId", length = 36)
+    private String datasetId;
+
+    @Column(name = "datasetVersion", nullable = false)
+    private int datasetVersion;
 
     /** Serialized {@code List<TurAgentEvalCaseResultDto>}. */
     @Column(name = "resultsJson", columnDefinition = "longtext")

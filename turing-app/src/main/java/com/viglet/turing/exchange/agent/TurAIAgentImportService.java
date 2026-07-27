@@ -28,6 +28,7 @@ import com.viglet.turing.persistence.model.agent.TurAIAgent;
 import com.viglet.turing.persistence.model.agent.TurAIAgentSlot;
 import com.viglet.turing.persistence.model.agent.TurAgentEvalCase;
 import com.viglet.turing.persistence.model.agent.TurAgentEvalSet;
+import com.viglet.turing.persistence.model.agent.TurEvalGraderConfig;
 import com.viglet.turing.persistence.model.agent.TurChatFlow;
 import com.viglet.turing.persistence.model.customtool.TurCustomTool;
 import com.viglet.turing.persistence.model.embedding.TurEmbeddingModel;
@@ -92,6 +93,7 @@ public class TurAIAgentImportService {
     private final TurStoreInstanceRepository storeRepository;
     private final TurEmbeddingModelRepository embeddingRepository;
     private final TurCustomToolRepository customToolRepository;
+    private final com.viglet.turing.tenant.TurInfraTenantScope infraTenantScope;
 
     public TurAIAgentImportService(TurAIAgentRepository agentRepository,
                                    TurChatFlowRepository chatFlowRepository,
@@ -103,7 +105,8 @@ public class TurAIAgentImportService {
                                    TurMcpServerRepository mcpServerRepository,
                                    TurStoreInstanceRepository storeRepository,
                                    TurEmbeddingModelRepository embeddingRepository,
-                                   TurCustomToolRepository customToolRepository) {
+                                   TurCustomToolRepository customToolRepository,
+                                   com.viglet.turing.tenant.TurInfraTenantScope infraTenantScope) {
         this.agentRepository = agentRepository;
         this.chatFlowRepository = chatFlowRepository;
         this.slotRepository = slotRepository;
@@ -115,6 +118,7 @@ public class TurAIAgentImportService {
         this.storeRepository = storeRepository;
         this.embeddingRepository = embeddingRepository;
         this.customToolRepository = customToolRepository;
+        this.infraTenantScope = infraTenantScope;
     }
 
     public record AgentConflict(String id, String name) {}
@@ -175,48 +179,45 @@ public class TurAIAgentImportService {
      */
     private ResolvedRefs resolveAllReferences(TurExchange exchange, File extractFolder) {
         ResolvedRefs refs = new ResolvedRefs();
-        if (exchange.getPersonas() != null) {
-            for (TurPersona p : exchange.getPersonas()) {
-                String originalId = p.getId();
-                TurPersona resolved = upsertPersona(p);
-                refs.personas.put(originalId, resolved);
-                if (!originalId.equals(resolved.getId())) {
-                    refs.personaIdRemap.put(originalId, resolved.getId());
-                }
+        resolveEach(exchange.getPersonas(), p -> {
+            String originalId = p.getId();
+            TurPersona resolved = upsertPersona(p);
+            refs.personas.put(originalId, resolved);
+            if (!originalId.equals(resolved.getId())) {
+                refs.personaIdRemap.put(originalId, resolved.getId());
             }
-        }
-        if (exchange.getLlm() != null) {
-            for (TurLLMInstance llm : exchange.getLlm()) {
-                refs.llms.put(llm.getId(), upsertLLM(llm));
-            }
-        }
-        if (exchange.getMcpServers() != null) {
-            for (TurMcpServer mcp : exchange.getMcpServers()) {
-                refs.mcpServers.put(mcp.getId(), upsertMcpServer(mcp));
-            }
-        }
-        if (exchange.getStore() != null) {
-            for (TurStoreInstance s : exchange.getStore()) {
-                refs.stores.put(s.getId(), upsertStore(s));
-            }
-        }
-        if (exchange.getEmbeddingModels() != null) {
-            for (TurEmbeddingModel em : exchange.getEmbeddingModels()) {
-                refs.embeddings.put(em.getId(), upsertEmbedding(em, refs));
-            }
-        }
-        if (exchange.getCustomTools() != null) {
-            for (TurCustomToolExchange tool : exchange.getCustomTools()) {
-                refs.customTools.put(tool.getId(), upsertCustomTool(tool, extractFolder));
-            }
-        }
+        });
+        resolveEach(exchange.getLlm(), llm -> refs.llms.put(llm.getId(), upsertLLM(llm)));
+        resolveEach(exchange.getMcpServers(),
+                mcp -> refs.mcpServers.put(mcp.getId(), upsertMcpServer(mcp)));
+        resolveEach(exchange.getStore(), s -> refs.stores.put(s.getId(), upsertStore(s)));
+        resolveEach(exchange.getEmbeddingModels(),
+                em -> refs.embeddings.put(em.getId(), upsertEmbedding(em, refs)));
+        resolveEach(exchange.getCustomTools(),
+                tool -> refs.customTools.put(tool.getId(), upsertCustomTool(tool, extractFolder)));
         return refs;
     }
 
+    /** Applies {@code resolver} to each item when the collection is non-null. */
+    private static <T> void resolveEach(java.util.Collection<T> items,
+            java.util.function.Consumer<T> resolver) {
+        if (items != null) {
+            items.forEach(resolver);
+        }
+    }
+
     private TurPersona upsertPersona(TurPersona p) {
-        TurPersona target = personaRepository.findById(p.getId())
-                .or(() -> personaRepository.findByNameIgnoreCase(p.getName()))
-                .orElseGet(TurPersona::new);
+        java.util.Optional<TurPersona> existing = personaRepository.findById(p.getId())
+                .or(() -> personaRepository.findByNameIgnoreCase(p.getName()));
+        TurPersona target = existing.orElseGet(TurPersona::new);
+        // T655 — preserve the incoming id for a brand-new persona so an explicit,
+        // human-readable seed id (e.g. the demo's `persona-skeptical-developer`)
+        // survives import and stays referenceable by external clients (the public
+        // site's persona picker / content-fit). A persona matched by name keeps
+        // its own id (the flow-graph persona-id remap handles that case).
+        if (existing.isEmpty() && p.getId() != null) {
+            target.setId(p.getId());
+        }
         target.setName(p.getName());
         target.setDescription(p.getDescription());
         target.setSystemInstruction(p.getSystemInstruction());
@@ -226,6 +227,12 @@ public class TurAIAgentImportService {
         target.setMandatoryTerms(p.getMandatoryTerms());
         target.setForbiddenTerms(p.getForbiddenTerms());
         target.setEnabled(p.getEnabled());
+        // Block AA fields — dropped before T655, which broke content-fit for an
+        // imported audience persona (it came back as a default SPEAKER with no
+        // audience facet). Carry the kind + audience facet + style calibration.
+        target.setPersonaKind(p.getPersonaKind());
+        target.setAudience(p.getAudience());
+        target.setCalibrateModelParams(p.getCalibrateModelParams());
         return personaRepository.save(target);
     }
 
@@ -236,9 +243,9 @@ public class TurAIAgentImportService {
         // post-import. For an existing instance matched by ID or title, the
         // existing apiKey on the persisted row is preserved (we only copy
         // non-secret fields below).
-        TurLLMInstance target = llmRepository.findById(llm.getId())
-                .or(() -> llmRepository.findByTitleIgnoreCase(llm.getTitle()))
-                .orElseGet(TurLLMInstance::new);
+        java.util.Optional<TurLLMInstance> existing = llmRepository.findById(llm.getId())
+                .or(() -> llmRepository.findByTitleIgnoreCase(llm.getTitle()));
+        TurLLMInstance target = existing.orElseGet(TurLLMInstance::new);
         target.setTitle(llm.getTitle());
         target.setDescription(llm.getDescription());
         target.setIcon(llm.getIcon());
@@ -260,13 +267,18 @@ public class TurAIAgentImportService {
         target.setContextWindow(llm.getContextWindow());
         target.setProviderOptionsJson(llm.getProviderOptionsJson());
         target.setToolsEnabled(llm.isToolsEnabled());
+        // Only a freshly created instance is claimed for the current tenant; an
+        // existing row keeps its owner (GLOBAL or another tenant) untouched.
+        if (existing.isEmpty()) {
+            infraTenantScope.stampOnImport(target);
+        }
         return llmRepository.save(target);
     }
 
     private TurMcpServer upsertMcpServer(TurMcpServer mcp) {
-        TurMcpServer target = mcpServerRepository.findById(mcp.getId())
-                .or(() -> mcpServerRepository.findByTitleIgnoreCase(mcp.getTitle()))
-                .orElseGet(TurMcpServer::new);
+        java.util.Optional<TurMcpServer> existing = mcpServerRepository.findById(mcp.getId())
+                .or(() -> mcpServerRepository.findByTitleIgnoreCase(mcp.getTitle()));
+        TurMcpServer target = existing.orElseGet(TurMcpServer::new);
         target.setTitle(mcp.getTitle());
         target.setDescription(mcp.getDescription());
         target.setIcon(mcp.getIcon());
@@ -276,13 +288,16 @@ public class TurAIAgentImportService {
         target.setType(mcp.getType());
         target.setConnectionType(mcp.getConnectionType());
         target.setEnabled(mcp.getEnabled());
+        if (existing.isEmpty()) {
+            infraTenantScope.stampOnImport(target);
+        }
         return mcpServerRepository.save(target);
     }
 
     private TurStoreInstance upsertStore(TurStoreInstance s) {
-        TurStoreInstance target = storeRepository.findById(s.getId())
-                .or(() -> storeRepository.findByTitleIgnoreCase(s.getTitle()))
-                .orElseGet(TurStoreInstance::new);
+        java.util.Optional<TurStoreInstance> existing = storeRepository.findById(s.getId())
+                .or(() -> storeRepository.findByTitleIgnoreCase(s.getTitle()));
+        TurStoreInstance target = existing.orElseGet(TurStoreInstance::new);
         target.setTitle(s.getTitle());
         target.setDescription(s.getDescription());
         target.setIcon(s.getIcon());
@@ -293,13 +308,16 @@ public class TurAIAgentImportService {
         target.setTurStoreVendor(s.getTurStoreVendor());
         // credentialEncrypted intentionally not copied — secret stays on
         // the existing row if updating, blank on new rows.
+        if (existing.isEmpty()) {
+            infraTenantScope.stampOnImport(target);
+        }
         return storeRepository.save(target);
     }
 
     private TurEmbeddingModel upsertEmbedding(TurEmbeddingModel em, ResolvedRefs refs) {
-        TurEmbeddingModel target = embeddingRepository.findById(em.getId())
-                .or(() -> embeddingRepository.findByModelNameIgnoreCase(em.getModelName()))
-                .orElseGet(TurEmbeddingModel::new);
+        java.util.Optional<TurEmbeddingModel> existing = embeddingRepository.findById(em.getId())
+                .or(() -> embeddingRepository.findByModelNameIgnoreCase(em.getModelName()));
+        TurEmbeddingModel target = existing.orElseGet(TurEmbeddingModel::new);
         target.setModelName(em.getModelName());
         target.setDescription(em.getDescription());
         target.setIcon(em.getIcon());
@@ -314,6 +332,9 @@ public class TurAIAgentImportService {
         if (em.getTurLLMInstance() != null && em.getTurLLMInstance().getId() != null) {
             TurLLMInstance resolved = refs.llms.get(em.getTurLLMInstance().getId());
             target.setTurLLMInstance(resolved != null ? resolved : em.getTurLLMInstance());
+        }
+        if (existing.isEmpty()) {
+            infraTenantScope.stampOnImport(target);
         }
         return embeddingRepository.save(target);
     }
@@ -383,6 +404,17 @@ public class TurAIAgentImportService {
         agent.setSystemPromptMetaPrompt(a.getSystemPromptMetaPrompt());
         agent.setEnabled(a.getEnabled());
         agent.setRagEnabled(a.isRagEnabled());
+        // Grounding policy travels with the agent. Null-guarded: a pre-existing
+        // export that omits the field keeps the entity default (OPEN) instead of
+        // nulling a non-null column.
+        agent.setGroundingMode(a.getGroundingMode() == null
+                ? com.viglet.turing.persistence.model.agent.TurAgentGroundingMode.OPEN
+                : a.getGroundingMode());
+        // T632 / T295 — rich-content rendering travels with the agent. Primitive
+        // boolean: a pre-T632 export that omits it deserializes to false, which
+        // matches the entity default, so old bundles are unaffected.
+        agent.setRichContentEnabled(a.isRichContentEnabled());
+        agent.setDiscloseKnowledgeCutoff(a.isDiscloseKnowledgeCutoff());
         agent.setChatMemoryEnabled(a.isChatMemoryEnabled());
         agent.setChatMemoryFlushIntervalMinutes(a.getChatMemoryFlushIntervalMinutes());
         agent.setChatMemoryMaxMessages(a.getChatMemoryMaxMessages());
@@ -403,6 +435,8 @@ public class TurAIAgentImportService {
             agent.setChatMemoryCompressionAsync(a.getChatMemoryCompressionAsync());
         }
         agent.setNativeTools(a.getNativeTools());
+        agent.setNativeCapabilities(a.getNativeCapabilities());
+        agent.setRequestOptionsJson(a.getRequestOptionsJson());
         agent.setPythonRequirements(a.getPythonRequirements());
         // T66 / §VII.6.g — null-guarded so pre-T66 exports keep the entity
         // default (RETAIN_FOREVER) instead of nulling a non-null column.
@@ -410,6 +444,11 @@ public class TurAIAgentImportService {
             agent.setSubmissionRetention(a.getSubmissionRetention());
         }
         agent.setSubmissionRetentionDays(a.getSubmissionRetentionDays());
+        // T166 / §X.9.d — null-guarded so pre-T166 exports keep the entity
+        // default (CONVERSATION) instead of nulling a non-null column.
+        if (a.getMemoryScope() != null) {
+            agent.setMemoryScope(a.getMemoryScope());
+        }
     }
 
     private static void wireAgentReferences(TurAIAgent agent, TurAIAgentExchange a, ResolvedRefs refs) {
@@ -467,6 +506,13 @@ public class TurAIAgentImportService {
                 for (TurAgentEvalCase c : set.getCases()) {
                     c.setId(null);
                     c.setTurAgentEvalSet(set);
+                }
+            }
+            // T587 — the grader stack travels inline with the set.
+            if (set.getGraderConfigs() != null) {
+                for (TurEvalGraderConfig gc : set.getGraderConfigs()) {
+                    gc.setId(null);
+                    gc.setTurAgentEvalSet(set);
                 }
             }
             evalSetRepository.save(set);

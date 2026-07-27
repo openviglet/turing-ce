@@ -53,10 +53,10 @@ import com.viglet.turing.persistence.repository.sn.sort.TurSNSiteCustomSortRepos
  * any of the underlying entities triggers eviction via
  * {@link TurSNSiteSnapshotEvictionListener}.
  *
- * <p>The service intentionally goes through the JPA repositories rather than
- * domain ports so the existing per-method {@code @Cacheable} annotations on
- * those repositories continue to absorb concurrent admin reads — the snapshot
- * sits on top, not in place, of those caches.
+ * <p>This snapshot is the read-model cache for the search hot path: it caches an
+ * immutable {@link TurSNSiteSearchSnapshot} value (not a JPA entity), so reads
+ * are safe outside a transaction. The repositories it reads from are themselves
+ * uncached (Block AC / T486 — repositories never cache entities).
  *
  * @author Alexandre Oliveira
  * @since 2026.2.4
@@ -101,8 +101,13 @@ public class TurSNSiteSearchSnapshotService {
         // Reaching this method means the cache lookup missed — Spring's @Cacheable
         // proxy short-circuits hits before invoking the method.
         pipelineObservation.recordSnapshotOutcome(TurMeterNames.OUTCOME_MISS);
+        // findByNameIgnoreCaseWithGenAi (not the plain findByNameIgnoreCase) so the
+        // to-one turSNSiteGenAi graph is initialized while the session is open. The
+        // snapshot caches the entity, so the T383 hybrid-ranking path that reads
+        // turSNSiteGenAi on a cache hit would otherwise hit a detached LAZY proxy
+        // (LazyInitializationException).
         return pipelineObservation.record(TurMeterNames.STAGE_SNAPSHOT_BUILD,
-                () -> turSNSiteRepository.findByNameIgnoreCase(siteName)
+                () -> turSNSiteRepository.findByNameIgnoreCaseWithGenAi(siteName)
                         .map(site -> build(site, locale)));
     }
 

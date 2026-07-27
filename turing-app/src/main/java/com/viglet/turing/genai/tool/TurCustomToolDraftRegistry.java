@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.codehaus.groovy.control.MultipleCompilationErrorsException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -75,6 +76,7 @@ public class TurCustomToolDraftRegistry {
     /** Monotonic counter for cleanup observability — tested via {@link #getEvictedCount()}. */
     private final AtomicInteger evictedCount = new AtomicInteger();
 
+    @Autowired
     public TurCustomToolDraftRegistry() {
         this(Clock.systemUTC());
     }
@@ -107,7 +109,7 @@ public class TurCustomToolDraftRegistry {
             String sanitized = TurCustomToolCallbackService.sanitizeGroovySource(groovySource);
             GroovyShell shell = new GroovyShell();
             @SuppressWarnings("unchecked")
-            Class<? extends Script> scriptClass = (Class<? extends Script>) shell.getClassLoader()
+            Class<? extends Script> scriptClass = shell.getClassLoader()
                     .parseClass(sanitized, "TurCustomToolDraft_" + toolId + ".groovy");
             DraftEntry entry = new DraftEntry(groovySource, scriptClass,
                     clock.instant(), clock.instant());
@@ -181,10 +183,8 @@ public class TurCustomToolDraftRegistry {
         Instant now = clock.instant();
         int count = 0;
         for (var e : drafts.entrySet()) {
-            if (isExpired(e.getValue(), now)) {
-                if (drafts.remove(e.getKey(), e.getValue())) {
-                    count++;
-                }
+            if (isExpired(e.getValue(), now) && drafts.remove(e.getKey(), e.getValue())) {
+                count++;
             }
         }
         evictedCount.addAndGet(count);

@@ -46,6 +46,17 @@ public class TurAIAgentExchange {
     private String systemPromptMetaPrompt;
     private int enabled;
     private boolean ragEnabled;
+    // Per-agent grounding policy. Carried so STRICT_RAG survives an export/import
+    // round-trip (e.g. the public demo ships its agent locked to site content).
+    // Null on a pre-existing export that omits it → import falls back to OPEN.
+    private com.viglet.turing.persistence.model.agent.TurAgentGroundingMode groundingMode;
+    // T295 / render.md — per-agent rich-content rendering (```html/```d2/charts).
+    // Carried so the capability survives an export/import round-trip (e.g. the
+    // public demo ships its agent with this on). Primitive default (false)
+    // matches the entity default for pre-T632 exports that omit the field.
+    private boolean richContentEnabled;
+    // T787 — carry the knowledge-cutoff disclosure toggle across export/import.
+    private boolean discloseKnowledgeCutoff;
     private boolean chatMemoryEnabled;
     private int chatMemoryFlushIntervalMinutes;
     private int chatMemoryMaxMessages;
@@ -61,10 +72,16 @@ public class TurAIAgentExchange {
     // T309 / §IX.3.f — run compression off the hot path (default true).
     private Boolean chatMemoryCompressionAsync;
     private String nativeTools;
+    // T433 / §X.18.b — per-agent provider-native capability selection (CSV).
+    private String nativeCapabilities;
+    // T435 / §X.18.d — per-agent REQUEST_OPTION selections (JSON object).
+    private String requestOptionsJson;
     private String pythonRequirements;
     // T66 / §VII.6.g — submission retention policy travels with the agent.
     private com.viglet.turing.persistence.model.agent.TurSubmissionRetention submissionRetention;
     private Integer submissionRetentionDays;
+    // T166 / §X.9.d — memory tool scope travels with the agent.
+    private com.viglet.turing.persistence.model.agent.TurMemoryScope memoryScope;
 
     // ─── reference IDs (entities live at envelope root) ───────────────
     private List<String> personaIds = new ArrayList<>();
@@ -98,6 +115,9 @@ public class TurAIAgentExchange {
         e.systemPromptMetaPrompt = agent.getSystemPromptMetaPrompt();
         e.enabled = agent.getEnabled();
         e.ragEnabled = agent.isRagEnabled();
+        e.groundingMode = agent.getGroundingMode();
+        e.richContentEnabled = agent.isRichContentEnabled();
+        e.discloseKnowledgeCutoff = agent.isDiscloseKnowledgeCutoff();
         e.chatMemoryEnabled = agent.isChatMemoryEnabled();
         e.chatMemoryFlushIntervalMinutes = agent.getChatMemoryFlushIntervalMinutes();
         e.chatMemoryMaxMessages = agent.getChatMemoryMaxMessages();
@@ -110,9 +130,12 @@ public class TurAIAgentExchange {
         e.chatMemoryCompressionInterval = agent.getChatMemoryCompressionInterval();
         e.chatMemoryCompressionAsync = agent.isChatMemoryCompressionAsync();
         e.nativeTools = agent.getNativeTools();
+        e.nativeCapabilities = agent.getNativeCapabilities();
+        e.requestOptionsJson = agent.getRequestOptionsJson();
         e.pythonRequirements = agent.getPythonRequirements();
         e.submissionRetention = agent.getSubmissionRetention();
         e.submissionRetentionDays = agent.getSubmissionRetentionDays();
+        e.memoryScope = agent.getMemoryScope();
 
         if (agent.getPersonas() != null) {
             agent.getPersonas().forEach(p -> e.personaIds.add(p.getId()));

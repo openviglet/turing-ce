@@ -1,6 +1,7 @@
 package com.viglet.turing.api.llm;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -37,6 +38,7 @@ import com.viglet.turing.persistence.mapper.llm.TurLLMInstanceMapper;
 import com.viglet.turing.persistence.model.llm.TurLLMInstance;
 import com.viglet.turing.persistence.repository.llm.TurLLMInstanceRepository;
 import com.viglet.turing.system.security.TurSecretCryptoService;
+import com.viglet.turing.tenant.TurInfraTenantScope;
 
 @ExtendWith(MockitoExtension.class)
 class TurLLMInstanceAPITest {
@@ -55,6 +57,9 @@ class TurLLMInstanceAPITest {
         @Spy
         private TurLLMInstanceMapper turLLMInstanceMapper = Mappers.getMapper(TurLLMInstanceMapper.class);
 
+        @Mock
+        private TurInfraTenantScope tenantScope;
+
         @InjectMocks
         private TurLLMInstanceAPI turLLMInstanceAPI;
 
@@ -62,6 +67,11 @@ class TurLLMInstanceAPITest {
 
         @BeforeEach
         void setUp() {
+                // Tenancy-off passthrough: list calls the unscoped supplier, create is a no-op.
+                lenient().when(tenantScope.visibleList(any(), any()))
+                                .thenAnswer(inv -> ((java.util.function.Supplier<?>) inv.getArgument(0)).get());
+                lenient().when(tenantScope.stampOnCreate(any())).thenAnswer(inv -> inv.getArgument(0));
+                lenient().when(tenantScope.isVisibleToTenant(any())).thenReturn(true);
                 mockMvc = MockMvcBuilders.standaloneSetup(turLLMInstanceAPI).build();
         }
 
@@ -172,6 +182,53 @@ class TurLLMInstanceAPITest {
         }
 
         @Test
+        void testTurLLMInstanceUpdate_persistsContextWindowAndEmbeddingDimensions() throws Exception {
+                // T780 — catalog-auto-filled limits must survive the update path.
+                TurLLMInstance existingInstance = new TurLLMInstance();
+                existingInstance.setId("1");
+                when(turLLMInstanceRepository.findById("1")).thenReturn(Optional.of(existingInstance));
+
+                String payload = """
+                                {
+                                  "title": "T",
+                                  "modelName": "gpt-4o",
+                                  "contextWindow": 128000,
+                                  "embeddingDimensions": 1536,
+                                  "turLLMVendor": { "id": "OPENAI" }
+                                }
+                                """;
+                mockMvc.perform(put("/api/llm/1")
+                                .contentType(MediaType.APPLICATION_JSON).content(payload))
+                                .andExpect(status().isOk());
+
+                ArgumentCaptor<TurLLMInstance> captor = ArgumentCaptor.forClass(TurLLMInstance.class);
+                verify(turLLMInstanceRepository).save(captor.capture());
+                org.assertj.core.api.Assertions.assertThat(captor.getValue().getContextWindow()).isEqualTo(128000);
+                org.assertj.core.api.Assertions.assertThat(captor.getValue().getEmbeddingDimensions()).isEqualTo(1536);
+        }
+
+        @Test
+        void testTurLLMInstanceUpdate_preservesDetectedEmbeddingDimensionsWhenOmitted() throws Exception {
+                // T780/T627 — a payload that omits embeddingDimensions must NOT wipe the
+                // runtime-detected value on the existing row.
+                TurLLMInstance existingInstance = new TurLLMInstance();
+                existingInstance.setId("1");
+                existingInstance.setEmbeddingDimensions(3072);
+                when(turLLMInstanceRepository.findById("1")).thenReturn(Optional.of(existingInstance));
+
+                String payload = """
+                                { "title": "T", "modelName": "gpt-4o", "turLLMVendor": { "id": "OPENAI" } }
+                                """;
+                mockMvc.perform(put("/api/llm/1")
+                                .contentType(MediaType.APPLICATION_JSON).content(payload))
+                                .andExpect(status().isOk());
+
+                ArgumentCaptor<TurLLMInstance> captor = ArgumentCaptor.forClass(TurLLMInstance.class);
+                verify(turLLMInstanceRepository).save(captor.capture());
+                org.assertj.core.api.Assertions.assertThat(captor.getValue().getEmbeddingDimensions()).isEqualTo(3072);
+        }
+
+        @Test
         void testTurLLMInstanceUpdate_NotFound() throws Exception {
                 TurLLMInstance updatedInstance = new TurLLMInstance();
                 updatedInstance.setTitle("New Title");
@@ -190,6 +247,11 @@ class TurLLMInstanceAPITest {
 
         @Test
         void testTurLLMInstanceDelete() throws Exception {
+                // T365 — delete only runs for a visible instance, so the by-id load must resolve.
+                TurLLMInstance instance = new TurLLMInstance();
+                instance.setId("1");
+                when(turLLMInstanceRepository.findById("1")).thenReturn(Optional.of(instance));
+
                 mockMvc.perform(delete("/api/llm/1"))
                                 .andExpect(status().isOk())
                                 .andExpect(content().string("true"));

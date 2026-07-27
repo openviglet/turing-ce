@@ -28,9 +28,9 @@ import { TurSEInstanceService } from "@/services/se/se.service"
 import { TurStoreInstanceService } from "@/services/store/store.service"
 import { TurFeaturesService, type LoggingEngine } from "@/services/system/features.service"
 import { TurGlobalSettingsService } from "@/services/system/global-settings.service"
-import { IconBolt, IconBrain, IconBrandPython, IconDatabase, IconDeviceFloppy, IconInfoCircle, IconPower, IconSettings, IconShieldLock, IconSparkles, IconX } from "@tabler/icons-react"
+import { IconActivity, IconBolt, IconBrain, IconBrandPython, IconDatabase, IconDeviceFloppy, IconHeadset, IconHistory, IconInfoCircle, IconMoon, IconPlug, IconPower, IconSettings, IconShieldLock, IconSparkles, IconWorldSearch, IconX } from "@tabler/icons-react"
 import { GradientButton } from "../ui/gradient-button"
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 import { useTranslation } from "react-i18next"
 import { useNavigate } from "react-router-dom"
@@ -41,13 +41,15 @@ import { GradientSwitch } from "../ui/gradient-switch"
 import { IconPicker } from "../ui/icon-picker"
 import { SectionCard } from "../ui/section-card"
 import { SmartDescription } from "../ui/smart-description"
+import { BentoFormSection, type BentoTone } from "../bento"
+import { BentoAgentSubHero } from "@/app/bento/ai-agent/bento.ai-agent.sub-hero"
+import type { ComponentType, ReactNode } from "react"
 
 const turEmbeddingModelService = new TurEmbeddingModelService();
 const turStoreInstanceService = new TurStoreInstanceService();
 const turSEInstanceService = new TurSEInstanceService();
 const turGlobalSettingsService = new TurGlobalSettingsService();
 const turFeaturesService = new TurFeaturesService();
-const urlBase = ROUTES.AI_AGENT_INSTANCE
 
 const DEFAULT_VALUE = "__default__";
 const NONE_VALUE = "__none__";
@@ -55,10 +57,59 @@ const NONE_VALUE = "__none__";
 interface Props {
   value: TurAIAgent;
   isNew: boolean;
+  /** Render inside the bento shell (frosted BentoFormSection + BentoSaveBar) instead of console chrome. */
+  chrome?: "console" | "bento";
+  /** Base route for navigation after save/cancel (defaults to the console AI agent list). */
+  baseRoute?: string;
 }
 
-export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
+type SectionProps = {
+  readonly variant?: "blue" | "violet" | "emerald" | "amber" | "cyan";
+  readonly tone: BentoTone;
+  readonly icon: ComponentType<{ size?: number }>;
+  readonly title: string;
+  readonly description?: string;
+  readonly children: ReactNode;
+};
+
+// Defined at module scope (NOT inside AIAgentSettingsForm): a component created
+// inside the render body gets a new function identity on every render, which
+// makes React unmount+remount its entire subtree on each keystroke — that
+// remount is what caused the visible "refresh" and the burst of
+// /api/system/global-settings fetches from the remounting SmartDescription /
+// IconPicker children. Switches each field group between the console
+// SectionCard and the frosted bento card, keeping the field bodies identical.
+const AgentFormSection: React.FC<SectionProps & { readonly chrome: "console" | "bento" }> = ({
+  chrome,
+  variant,
+  tone,
+  icon,
+  title,
+  description,
+  children,
+}) =>
+  chrome === "bento" ? (
+    <BentoFormSection icon={icon} tone={tone} title={title} description={description}>
+      {children}
+    </BentoFormSection>
+  ) : (
+    <SectionCard variant={variant}>
+      <SectionCard.Header icon={icon} title={title} description={description} />
+      <SectionCard.Content>{children}</SectionCard.Content>
+    </SectionCard>
+  );
+
+export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew, chrome = "console", baseRoute }) => {
   const { t } = useTranslation();
+  const urlBase = baseRoute ?? ROUTES.AI_AGENT_INSTANCE;
+
+  // Stable alias so the ~15 <Section> call sites below stay unchanged. The
+  // identity only changes with `chrome` (which is fixed for the form's life),
+  // so children never remount on keystroke re-renders. See AgentFormSection.
+  const Section = useCallback(
+    (props: SectionProps) => <AgentFormSection chrome={chrome} {...props} />,
+    [chrome],
+  );
   const form = useForm<TurAIAgent>({
     defaultValues: value
   });
@@ -122,7 +173,16 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
       enabled: value.enabled ?? 1,
       ragEnabled: value.ragEnabled ?? false,
       richContentEnabled: value.richContentEnabled ?? false,
+      discloseKnowledgeCutoff: value.discloseKnowledgeCutoff ?? false,
+      liveAnswersEnabled: value.liveAnswersEnabled ?? false,
+      callCenterEnabled: value.callCenterEnabled ?? false,
+      connectorSetupEnabled: value.connectorSetupEnabled ?? false,
+      overnightImprovementEnabled: value.overnightImprovementEnabled ?? false,
+      toolCallEventsEnabled: value.toolCallEventsEnabled ?? false,
+      promptCaptureEnabled: value.promptCaptureEnabled ?? false,
       skillsEnabled: value.skillsEnabled ?? false,
+      onlineEvalEnabled: value.onlineEvalEnabled ?? false,
+      onlineEvalGraderStackId: value.onlineEvalGraderStackId ?? "",
       chatMemoryEnabled: value.chatMemoryEnabled ?? false,
       chatMemoryFlushIntervalMinutes: value.chatMemoryFlushIntervalMinutes ?? 5,
       chatMemoryMaxMessages: value.chatMemoryMaxMessages ?? 100,
@@ -144,6 +204,10 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
       // behaviour (no enforcement) until the operator opts in.
       maxPromptTokens: value.maxPromptTokens ?? 0,
       overBudgetBehavior: value.overBudgetBehavior ?? "WARN",
+      // T291 / §XVI.3 (Block L) — cost budget gate off by default (null caps).
+      monthlyBudgetUsd: value.monthlyBudgetUsd ?? null,
+      perTurnSoftCapUsd: value.perTurnSoftCapUsd ?? null,
+      budgetDowngradeLlmId: value.budgetDowngradeLlmId ?? null,
       // T66 / §VII.6.g — RETAIN_FOREVER matches the backend enum default so
       // existing agents keep every submission until the operator opts in.
       submissionRetention: value.submissionRetention ?? "RETAIN_FOREVER",
@@ -152,6 +216,13 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
       // CALL is the safe default — matches the backend enum default and
       // the pre-2026.2.7 behavior (single SSE event after the LLM finishes).
       chatMode: value.chatMode ?? "CALL",
+      // T166 / §X.9.d — CONVERSATION matches the backend enum default (memory
+      // tool scoped per conversation until the operator opts into per-user).
+      memoryScope: value.memoryScope ?? "CONVERSATION",
+      // OPEN matches the backend enum default (flexible, general-purpose).
+      // STRICT_RAG locks the agent to the site's indexed content on the SN
+      // chat path only.
+      groundingMode: value.groundingMode ?? "OPEN",
       // T19/T24 reposition (2026.2.7): ragBm25Fallback and ragHybridSearch
       // moved from agent to TurSNSiteGenAi (RAG only runs in SN site
       // context; locale-aware retrieval needs SN site's locale config).
@@ -248,27 +319,40 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 px-4 lg:px-6 pb-8">
-        <StickyPageHeader>
-          <StickyPageHeader.Title
+      <form onSubmit={form.handleSubmit(onSubmit)} className={chrome === "bento" ? "space-y-4 md:space-y-5 pb-8" : "space-y-4 px-4 lg:px-6 pb-8"}>
+        {chrome === "bento" ? (
+          <BentoAgentSubHero
+            agentId={isNew ? "new" : (value.id ?? "new")}
+            agentTitle={isNew ? t("aiAgent.newInstance") : (value.title || t("aiAgent.title"))}
             icon={IconSettings}
-            feature={t("aiAgent.settings.title")}
-            description={t("aiAgent.settings.description")}
+            tone="blue"
+            title={t("aiAgent.settings.title")}
+            subtitle={t("aiAgent.settings.description")}
+            onCancel={() => navigate(urlBase)}
+            loading={createMutation.isPending || updateMutation.isPending}
+            titleMissing={!form.watch("title")?.trim()}
+            dirty={isNew || form.formState.isDirty}
           />
-          <StickyPageHeader.Actions>
-            <GradientButton type="submit" size="sm">
-              <IconDeviceFloppy className="size-4" />
-              {t("forms.formActions.saveChanges")}
-            </GradientButton>
-            <GradientButton type="button" variant="outline" size="sm" onClick={() => navigate(urlBase)}>
-              <IconX className="size-4" />
-              {t("forms.formActions.cancel")}
-            </GradientButton>
-          </StickyPageHeader.Actions>
-        </StickyPageHeader>
-          <SectionCard variant="blue">
-            <SectionCard.Header icon={IconInfoCircle} title={t("forms.common.generalInfo")} description={t("forms.agentSettings.generalDesc")} />
-            <SectionCard.Content>
+        ) : (
+          <StickyPageHeader>
+            <StickyPageHeader.Title
+              icon={IconSettings}
+              feature={t("aiAgent.settings.title")}
+              description={t("aiAgent.settings.description")}
+            />
+            <StickyPageHeader.Actions>
+              <GradientButton type="submit" size="sm">
+                <IconDeviceFloppy className="size-4" />
+                {t("forms.formActions.saveChanges")}
+              </GradientButton>
+              <GradientButton type="button" variant="outline" size="sm" onClick={() => navigate(urlBase)}>
+                <IconX className="size-4" />
+                {t("forms.formActions.cancel")}
+              </GradientButton>
+            </StickyPageHeader.Actions>
+          </StickyPageHeader>
+        )}
+          <Section variant="blue" tone="blue" icon={IconInfoCircle} title={t("forms.common.generalInfo")} description={t("forms.agentSettings.generalDesc")}>
               <FormField
                 control={form.control}
                 name="title"
@@ -334,12 +418,9 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   </FormItem>
                 )}
               />
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
-          <SectionCard variant="violet">
-            <SectionCard.Header icon={IconBrain} title={t("forms.agentSettings.ragModels")} description={t("forms.agentSettings.ragModelsDesc")} />
-            <SectionCard.Content>
+          <Section variant="violet" tone="violet" icon={IconBrain} title={t("forms.agentSettings.ragModels")} description={t("forms.agentSettings.ragModelsDesc")}>
               <FormField
                 control={form.control}
                 name="turEmbeddingModelInstance"
@@ -460,12 +541,9 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   </FormItemTwoColumns>
                 )}
               />
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
-          <SectionCard variant="blue">
-            <SectionCard.Header icon={IconPower} title={t("forms.agentSettings.rag")} description={t("forms.agentSettings.ragDesc")} />
-            <SectionCard.Content>
+          <Section variant="blue" tone="blue" icon={IconPower} title={t("forms.agentSettings.rag")} description={t("forms.agentSettings.ragDesc")}>
               <FormField
                 control={form.control}
                 name="ragEnabled"
@@ -497,16 +575,9 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   chat API is the only invocation path that exercises
                   RAG) and locale-aware retrieval depends on
                   TurSNSiteLocale, which the SN site owns. */}
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
-          <SectionCard variant="blue">
-            <SectionCard.Header
-              icon={IconSparkles}
-              title={t("forms.agentSettings.richContent")}
-              description={t("forms.agentSettings.richContentDesc")}
-            />
-            <SectionCard.Content>
+          <Section variant="blue" tone="blue" icon={IconSparkles} title={t("forms.agentSettings.richContent")} description={t("forms.agentSettings.richContentDesc")}>
               <FormField
                 control={form.control}
                 name="richContentEnabled"
@@ -529,16 +600,232 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   </FormItemTwoColumns>
                 )}
               />
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
-          <SectionCard variant="blue">
-            <SectionCard.Header
-              icon={IconBolt}
-              title={t("forms.agentSettings.skills")}
-              description={t("forms.agentSettings.skillsDesc")}
-            />
-            <SectionCard.Content>
+          <Section variant="blue" tone="blue" icon={IconHistory} title={t("forms.agentSettings.knowledgeCutoff")} description={t("forms.agentSettings.knowledgeCutoffDesc")}>
+              <FormField
+                control={form.control}
+                name="discloseKnowledgeCutoff"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.discloseKnowledgeCutoff")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.discloseKnowledgeCutoffDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <GradientSwitch
+                          checked={!!field.value}
+                          onCheckedChange={(checked) => field.onChange(checked)}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconWorldSearch} title={t("forms.agentSettings.liveAnswers")} description={t("forms.agentSettings.liveAnswersDesc")}>
+              <FormField
+                control={form.control}
+                name="liveAnswersEnabled"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.enableLiveAnswers")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.enableLiveAnswersDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <GradientSwitch
+                          checked={!!field.value}
+                          onCheckedChange={(checked) => field.onChange(checked)}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconHeadset} title={t("forms.agentSettings.callCenter")} description={t("forms.agentSettings.callCenterDesc")}>
+              <FormField
+                control={form.control}
+                name="callCenterEnabled"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.enableCallCenter")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.enableCallCenterDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <GradientSwitch
+                          checked={!!field.value}
+                          onCheckedChange={(checked) => field.onChange(checked)}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconPlug} title={t("forms.agentSettings.connectorSetup")} description={t("forms.agentSettings.connectorSetupDesc")}>
+              <FormField
+                control={form.control}
+                name="connectorSetupEnabled"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.enableConnectorSetup")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.enableConnectorSetupDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <GradientSwitch
+                          checked={!!field.value}
+                          onCheckedChange={(checked) => field.onChange(checked)}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconMoon} title={t("forms.agentSettings.overnightImprovement")} description={t("forms.agentSettings.overnightImprovementDesc")}>
+              <FormField
+                control={form.control}
+                name="overnightImprovementEnabled"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.enableOvernightImprovement")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.enableOvernightImprovementDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <GradientSwitch
+                          checked={!!field.value}
+                          onCheckedChange={(checked) => field.onChange(checked)}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconActivity} title={t("forms.agentSettings.toolActivity")} description={t("forms.agentSettings.toolActivityDesc")}>
+              <FormField
+                control={form.control}
+                name="toolCallEventsEnabled"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.enableToolActivity")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.enableToolActivityDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <GradientSwitch
+                          checked={!!field.value}
+                          onCheckedChange={(checked) => field.onChange(checked)}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconHistory} title={t("forms.agentSettings.promptCapture")} description={t("forms.agentSettings.promptCaptureDesc")}>
+              <FormField
+                control={form.control}
+                name="promptCaptureEnabled"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.enablePromptCapture")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.enablePromptCaptureDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <GradientSwitch
+                          checked={!!field.value}
+                          onCheckedChange={(checked) => field.onChange(checked)}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconActivity} title={t("forms.agentSettings.onlineEval", { defaultValue: "Continuous / online eval" })} description={t("forms.agentSettings.onlineEvalDesc", { defaultValue: "Sample this agent's live traffic and grade it in the background to catch quality drift after publish (requires the global online-eval switch)." })}>
+              <FormField
+                control={form.control}
+                name="onlineEvalEnabled"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.enableOnlineEval", { defaultValue: "Enable online eval" })}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.enableOnlineEvalDesc", { defaultValue: "When on, the nightly sweep samples recent live sessions and records a drift snapshot in the Eval Studio's Online tab." })}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <GradientSwitch
+                          checked={!!field.value}
+                          onCheckedChange={(checked) => field.onChange(checked)}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="onlineEvalGraderStackId"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.onlineEvalStack", { defaultValue: "Grader stack id" })}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.onlineEvalStackDesc", { defaultValue: "Optional reusable grader stack to score sampled traffic with. Leave blank for signal-only snapshots (sentiment / citation / failing rates)." })}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <Input
+                          value={field.value ?? ""}
+                          onChange={(event) => field.onChange(event.target.value)}
+                          placeholder={t("forms.agentSettings.onlineEvalStackPlaceholder", { defaultValue: "grader stack id (optional)" })}
+                        />
+                      </FormControl>
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconBolt} title={t("forms.agentSettings.skills")} description={t("forms.agentSettings.skillsDesc")}>
               <FormField
                 control={form.control}
                 name="skillsEnabled"
@@ -564,16 +851,9 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   </FormItemTwoColumns>
                 )}
               />
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
-          <SectionCard variant="violet">
-            <SectionCard.Header
-              icon={IconDatabase}
-              title={t("forms.agentSettings.chatMemory")}
-              description={t("forms.agentSettings.chatMemoryDesc")}
-            />
-            <SectionCard.Content>
+          <Section variant="violet" tone="violet" icon={IconDatabase} title={t("forms.agentSettings.chatMemory")} description={t("forms.agentSettings.chatMemoryDesc")}>
               <FormField
                 control={form.control}
                 name="chatMemoryEnabled"
@@ -877,7 +1157,9 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                           min={0}
                           max={1_000_000}
                           step={500}
-                          placeholder="0 (disabled)"
+                          placeholder={t("forms.agentSettings.zeroDisabledPlaceholder", {
+                            defaultValue: "0 (disabled)",
+                          })}
                           value={field.value ?? 0}
                           onChange={(e) => field.onChange(Number(e.target.value))}
                           onBlur={field.onBlur}
@@ -908,19 +1190,142 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                     </FormItemTwoColumns.Left>
                     <FormItemTwoColumns.Right>
                       <FormControl>
-                        <select
-                          aria-label={t("forms.agentSettings.overBudgetBehavior", { defaultValue: "Over-budget behaviour" })}
-                          className="border rounded-md px-3 py-2 text-sm bg-background"
+                        <Select
                           value={field.value ?? "WARN"}
-                          onChange={(e) => field.onChange(e.target.value)}
+                          onValueChange={(value: string) => field.onChange(value)}
+                        >
+                          <SelectTrigger
+                            className="w-full"
+                            aria-label={t("forms.agentSettings.overBudgetBehavior", {
+                              defaultValue: "Over-budget behaviour",
+                            })}
+                          >
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="WARN">WARN</SelectItem>
+                            <SelectItem value="ERROR">ERROR</SelectItem>
+                            <SelectItem value="COMPACT">
+                              {t("forms.agentSettings.overBudgetBehaviorCompact", {
+                                defaultValue: "COMPACT (V1: degrades to WARN)",
+                              })}
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+              {/* T291 / §XVI.3 (Block L) — turn-time soft cost budget.
+                  Provider-agnostic; reads the frozen per-turn USD cost. */}
+              <FormField
+                control={form.control}
+                name="monthlyBudgetUsd"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>
+                        {t("forms.agentSettings.monthlyBudgetUsd", { defaultValue: "Monthly budget (USD)" })}
+                      </FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.monthlyBudgetUsdDesc", {
+                          defaultValue:
+                            "Soft month-to-date spend cap. Empty or 0 disables the gate. On breach the agent downgrades to the LLM below (if set) or logs a warning and proceeds — it never aborts a turn.",
+                        })}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={1}
+                          placeholder={t("forms.agentSettings.zeroDisabledPlaceholder", {
+                            defaultValue: "0 (disabled)",
+                          })}
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
                           onBlur={field.onBlur}
                           ref={field.ref}
                           name={field.name}
-                          disabled={(form.watch("maxPromptTokens") ?? 0) === 0}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="perTurnSoftCapUsd"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>
+                        {t("forms.agentSettings.perTurnSoftCapUsd", { defaultValue: "Per-turn soft cap (USD)" })}
+                      </FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.perTurnSoftCapUsdDesc", {
+                          defaultValue:
+                            "Logs a warning when a single turn costs more than this. Empty or 0 disables it. Post-hoc signal only — the cost is known after the LLM responds, so it never aborts the turn.",
+                        })}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <Input
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          placeholder={t("forms.agentSettings.zeroDisabledPlaceholder", {
+                            defaultValue: "0 (disabled)",
+                          })}
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(e.target.value === "" ? null : Number(e.target.value))}
+                          onBlur={field.onBlur}
+                          ref={field.ref}
+                          name={field.name}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="budgetDowngradeLlmId"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>
+                        {t("forms.agentSettings.budgetDowngradeLlm", { defaultValue: "Downgrade LLM on breach" })}
+                      </FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {t("forms.agentSettings.budgetDowngradeLlmDesc", {
+                          defaultValue:
+                            "Cheaper LLM to switch to for the rest of the month once the monthly budget is breached. Leave as \"Warn only\" to keep the current model and just log.",
+                        })}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <select
+                          aria-label={t("forms.agentSettings.budgetDowngradeLlm", { defaultValue: "Downgrade LLM on breach" })}
+                          className="border rounded-md px-3 py-2 text-sm bg-background"
+                          value={field.value ?? ""}
+                          onChange={(e) => field.onChange(e.target.value === "" ? null : e.target.value)}
+                          onBlur={field.onBlur}
+                          ref={field.ref}
+                          name={field.name}
+                          disabled={!form.watch("monthlyBudgetUsd")}
                         >
-                          <option value="WARN">WARN</option>
-                          <option value="ERROR">ERROR</option>
-                          <option value="COMPACT">COMPACT (V1: degrades to WARN)</option>
+                          <option value="">{t("forms.agentSettings.budgetWarnOnly", { defaultValue: "Warn only (no downgrade)" })}</option>
+                          {(form.watch("llmInstances") ?? []).map((llm) => (
+                            <option key={llm.id} value={llm.id}>{llm.title}</option>
+                          ))}
                         </select>
                       </FormControl>
                       <FormMessage />
@@ -928,20 +1333,10 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   </FormItemTwoColumns>
                 )}
               />
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
           {/* T66 / §VII.6.g — submission retention (LGPD/GDPR compliance hook). */}
-          <SectionCard variant="amber">
-            <SectionCard.Header
-              icon={IconShieldLock}
-              title={t("forms.agentSettings.submissionRetention", { defaultValue: "Submission retention" })}
-              description={t("forms.agentSettings.submissionRetentionSectionDesc", {
-                defaultValue:
-                  "Compliance policy (LGPD / GDPR) for how long this agent's completed chat-flow submissions are kept. Applies to the submission archive only — live PII slots expire via the global PII retention TTL.",
-              })}
-            />
-            <SectionCard.Content>
+          <Section variant="amber" tone="amber" icon={IconShieldLock} title={t("forms.agentSettings.submissionRetention", { defaultValue: "Submission retention" })} description={t("forms.agentSettings.submissionRetentionSectionDesc", { defaultValue: "Compliance policy (LGPD / GDPR) for how long this agent's completed chat-flow submissions are kept. Applies to the submission archive only — live PII slots expire via the global PII retention TTL." })}>
               <FormField
                 control={form.control}
                 name="submissionRetention"
@@ -1027,16 +1422,9 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   )}
                 />
               )}
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
-          <SectionCard>
-            <SectionCard.Header
-              icon={IconBrandPython}
-              title={t("forms.agentSettings.codeInterpreter")}
-              description={t("forms.agentSettings.codeInterpreterDesc")}
-            />
-            <SectionCard.Content>
+          <Section tone="slate" icon={IconBrandPython} title={t("forms.agentSettings.codeInterpreter")} description={t("forms.agentSettings.codeInterpreterDesc")}>
               <FormField
                 control={form.control}
                 name="pythonRequirements"
@@ -1061,16 +1449,9 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   </FormItem>
                 )}
               />
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
-          <SectionCard variant="blue">
-            <SectionCard.Header
-              icon={IconBolt}
-              title={t("forms.agentSettings.chatMode")}
-              description={t("forms.agentSettings.chatModeDesc")}
-            />
-            <SectionCard.Content>
+          <Section variant="blue" tone="blue" icon={IconBolt} title={t("forms.agentSettings.chatMode")} description={t("forms.agentSettings.chatModeDesc")}>
               <FormField
                 control={form.control}
                 name="chatMode"
@@ -1104,16 +1485,81 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   </FormItemTwoColumns>
                 )}
               />
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
-          <SectionCard variant="emerald">
-            <SectionCard.Header
-              icon={IconPower}
-              title={t("forms.common.status")}
-              description={t("forms.agentSettings.statusDesc")}
-            />
-            <SectionCard.Content>
+          <Section variant="blue" tone="blue" icon={IconShieldLock} title={t("forms.agentSettings.groundingMode")} description={t("forms.agentSettings.groundingModeDesc")}>
+              <FormField
+                control={form.control}
+                name="groundingMode"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.groundingMode")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {field.value === "STRICT_RAG"
+                          ? t("forms.agentSettings.groundingModeStrictDesc")
+                          : t("forms.agentSettings.groundingModeOpenDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <Select
+                          onValueChange={(v) => field.onChange(v)}
+                          value={field.value ?? "OPEN"}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="OPEN">{t("forms.agentSettings.groundingModeOpen")}</SelectItem>
+                            <SelectItem value="STRICT_RAG">{t("forms.agentSettings.groundingModeStrict")}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="blue" tone="blue" icon={IconBrain} title={t("forms.agentSettings.memoryScope")} description={t("forms.agentSettings.memoryScopeDesc")}>
+              <FormField
+                control={form.control}
+                name="memoryScope"
+                render={({ field }) => (
+                  <FormItemTwoColumns>
+                    <FormItemTwoColumns.Left>
+                      <FormItemTwoColumns.Label>{t("forms.agentSettings.memoryScope")}</FormItemTwoColumns.Label>
+                      <FormItemTwoColumns.Description>
+                        {field.value === "USER"
+                          ? t("forms.agentSettings.memoryScopeUserDesc")
+                          : t("forms.agentSettings.memoryScopeConversationDesc")}
+                      </FormItemTwoColumns.Description>
+                    </FormItemTwoColumns.Left>
+                    <FormItemTwoColumns.Right>
+                      <FormControl>
+                        <Select
+                          onValueChange={(v) => field.onChange(v)}
+                          value={field.value ?? "CONVERSATION"}
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="CONVERSATION">{t("forms.agentSettings.memoryScopeConversation")}</SelectItem>
+                            <SelectItem value="USER">{t("forms.agentSettings.memoryScopeUser")}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </FormControl>
+                      <FormMessage />
+                    </FormItemTwoColumns.Right>
+                  </FormItemTwoColumns>
+                )}
+              />
+        </Section>
+
+          <Section variant="emerald" tone="emerald" icon={IconPower} title={t("forms.common.status")} description={t("forms.agentSettings.statusDesc")}>
               <FormField
                 control={form.control}
                 name="enabled"
@@ -1137,8 +1583,7 @@ export const AIAgentSettingsForm: React.FC<Props> = ({ value, isNew }) => {
                   </FormItemTwoColumns>
                 )}
               />
-            </SectionCard.Content>
-          </SectionCard>
+        </Section>
 
         </form>
     </Form>

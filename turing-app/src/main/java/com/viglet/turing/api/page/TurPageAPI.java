@@ -21,6 +21,7 @@
 package com.viglet.turing.api.page;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.viglet.turing.api.asset.TurAssetItem;
 import com.viglet.turing.service.storage.TurStorageService;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.extern.slf4j.Slf4j;
@@ -55,9 +56,12 @@ public class TurPageAPI {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final TurStorageService storageService;
+    private final com.viglet.turing.properties.TurAbuseControlProperty abuseControlProperty;
 
-    public TurPageAPI(TurStorageService storageService) {
+    public TurPageAPI(TurStorageService storageService,
+            com.viglet.turing.properties.TurAbuseControlProperty abuseControlProperty) {
         this.storageService = storageService;
+        this.abuseControlProperty = abuseControlProperty;
     }
 
     public record TurPageManifest(
@@ -81,7 +85,7 @@ public class TurPageAPI {
             return ResponseEntity.ok(List.of());
         }
         List<TurPageSite> sites = storageService.listObjects(PAGES_PREFIX).stream()
-                .filter(item -> item.directory())
+                .filter(TurAssetItem::directory)
                 .map(item -> {
                     String dirName = item.name();
                     if (dirName.startsWith(PAGES_PREFIX)) {
@@ -112,21 +116,39 @@ public class TurPageAPI {
         // Delete existing site contents before uploading
         storageService.deleteObjectsWithPrefix(prefix);
         TurPageManifest manifest = null;
+        var caps = abuseControlProperty.getChat();
+        int count = 0;
+        long total = 0L;
         try (ZipInputStream zis = new ZipInputStream(file.getInputStream())) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
-                if (entry.isDirectory()) {
-                    zis.closeEntry();
-                    continue;
-                }
                 String entryName = entry.getName();
-                // Skip hidden files and __MACOSX
-                if (entryName.startsWith("__MACOSX") || entryName.contains("/.")
-                        || entryName.startsWith(".")) {
+                // Skip directories, hidden files and __MACOSX
+                if (entry.isDirectory() || entryName.startsWith("__MACOSX")
+                        || entryName.contains("/.") || entryName.startsWith(".")) {
                     zis.closeEntry();
                     continue;
                 }
-                byte[] data = zis.readAllBytes();
+                // T645 / §XXXVII.7 — Zip-Slip: reject an entry that escapes the
+                // site prefix via a `..` segment (fail closed on the archive).
+                // Belt-and-braces over the unconditional key containment in
+                // TurTenantScopedStorageService.
+                if (hasTraversalSegment(entryName)) {
+                    throw new IllegalArgumentException(
+                            "ZIP entry escapes the destination (path traversal): " + entryName);
+                }
+                // T648 / §XXXVII.10 — zip-bomb guard: cap entry count, per-entry
+                // (bounded read) and total uncompressed size.
+                if (caps.getMaxZipEntries() > 0 && ++count > caps.getMaxZipEntries()) {
+                    throw new IllegalArgumentException(
+                            "ZIP has too many entries (max " + caps.getMaxZipEntries() + ").");
+                }
+                byte[] data = readEntryBounded(zis, caps.getMaxZipEntryBytes(), entryName);
+                total += data.length;
+                if (caps.getMaxZipTotalBytes() > 0 && total > caps.getMaxZipTotalBytes()) {
+                    throw new IllegalArgumentException(
+                            "ZIP total uncompressed size exceeds " + caps.getMaxZipTotalBytes() + " bytes.");
+                }
                 // Parse manifest if found
                 if (entryName.equals(MANIFEST_FILE) || entryName.endsWith("/" + MANIFEST_FILE)) {
                     manifest = parseManifest(data);
@@ -144,6 +166,39 @@ public class TurPageAPI {
         }
         log.info("SPA site '{}' deployed successfully.", normalizedName);
         return ResponseEntity.ok(new TurPageSite(normalizedName, manifest));
+    }
+
+    /** True when any {@code /}- or {@code \}-segment of the entry name is {@code ..} (Zip-Slip). */
+    static boolean hasTraversalSegment(String name) {
+        if (name == null) {
+            return false;
+        }
+        for (String segment : name.replace('\\', '/').split("/")) {
+            if (segment.equals("..")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * T648 / §XXXVII.10 — read one ZIP entry, aborting if it exceeds {@code maxBytes}
+     * uncompressed (defeats a zip bomb that would OOM a plain {@code readAllBytes}).
+     */
+    static byte[] readEntryBounded(InputStream in, long maxBytes, String name) throws IOException {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        long readTotal = 0;
+        int n;
+        while ((n = in.read(buffer)) != -1) {
+            readTotal += n;
+            if (maxBytes > 0 && readTotal > maxBytes) {
+                throw new IllegalArgumentException(
+                        "ZIP entry '" + name + "' exceeds the maximum size of " + maxBytes + " bytes.");
+            }
+            out.write(buffer, 0, n);
+        }
+        return out.toByteArray();
     }
 
     @DeleteMapping("/{siteName}")

@@ -13,12 +13,10 @@ import java.io.Serial;
 import java.io.Serializable;
 import java.time.Instant;
 
-import com.viglet.turing.persistence.utils.TurAssignableUuidGenerator;
+import com.viglet.core.jpa.VigletAssignableUuidGenerator;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
@@ -67,7 +65,7 @@ public class TurTenant implements Serializable {
     public static final String DEFAULT_TENANT_ID = "DEFAULT";
 
     @Id
-    @TurAssignableUuidGenerator
+    @VigletAssignableUuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
     private String id;
 
@@ -108,6 +106,15 @@ public class TurTenant implements Serializable {
     /** Creation instant; stamped on first persist (DB also defaults it for seeds). */
     @Column(name = "createdAt", nullable = false)
     private Instant createdAt;
+
+    /**
+     * T336 / §XIV.8.3 — when the tenant was last moved into
+     * {@link TurTenantStatus#SUSPENDED}. Anchors the grace window before the
+     * deprovision sweep hard-deletes an orphaned personal tenant; {@code null}
+     * while {@link TurTenantStatus#ACTIVE}.
+     */
+    @Column(name = "suspendedAt")
+    private Instant suspendedAt;
 
     @PrePersist
     void onCreate() {

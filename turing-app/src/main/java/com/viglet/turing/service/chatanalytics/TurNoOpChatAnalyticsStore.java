@@ -47,9 +47,7 @@ public class TurNoOpChatAnalyticsStore implements TurChatAnalyticsStore {
 
     @Override
     public List<Map<String, Object>> findRecentSessions(Instant from, Instant to,
-            String agentId, String personaId, String outcome,
-            String intentLabel, String goalAchieved, String sentiment,
-            int limit) {
+            TurChatSessionFilter filter, int limit) {
         return Collections.emptyList();
     }
 
@@ -85,6 +83,9 @@ public class TurNoOpChatAnalyticsStore implements TurChatAnalyticsStore {
     }
 
     @Override
+    @SuppressWarnings("java:S1168") // returns null to signal that no session was
+    // found, matching the findById convention; returning an empty map would wrongly
+    // suggest a session exists but carries no fields.
     public Map<String, Object> findSessionById(String conversationId) {
         return null;
     }

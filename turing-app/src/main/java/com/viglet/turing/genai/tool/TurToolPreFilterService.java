@@ -193,25 +193,70 @@ public class TurToolPreFilterService {
         // BM25 ranking would still help by preferring high-scoring tools
         // among the non-protected ones, but only as a tie-breaker. Keep
         // protected + fill remaining quota with top-scoring callbacks.
-        int quotaForRanked = Math.max(0, topK - countProtected(callbacks, protectedNames));
-
         // Map names → original callbacks so we can rebuild the result in
         // the requested order without scanning the array N times.
-        Map<String, ToolCallback> byName = new LinkedHashMap<>();
-        for (ToolCallback cb : callbacks) {
-            String name = safeName(cb);
-            if (name == null) continue;
-            byName.putIfAbsent(name, cb);
-        }
+        Map<String, ToolCallback> byName = indexByName(callbacks);
         if (byName.size() <= topK) {
             recordObservation(callbacks.length, callbacks.length, start,
                     TurMeterNames.REASON_CAP_COVERS_POOL);
             return callbacks;
         }
 
+        // Normal quota for the ranked (non-protected = MCP/custom) pool.
+        int protectedCount = countProtected(callbacks, protectedNames);
+        int rankedPoolSize = Math.max(0, byName.size() - protectedCount);
+        int quotaForRanked = topK - protectedCount;
+        // T424 / §XXI — anti-starvation floor. When the always-keep native set
+        // alone meets/exceeds topK the quota goes to ≤ 0, which silently dropped
+        // EVERY operator-attached MCP/custom tool (real incident: 24 natives,
+        // topK=10 → no dspace_* tool ever reached the model). ONLY in that
+        // starved case do we reserve up to {@code reserveAttached} slots for the
+        // top-scoring attached tools — when the quota is already positive we
+        // respect topK and do not inflate it.
+        if (quotaForRanked <= 0 && rankedPoolSize > 0) {
+            quotaForRanked = Math.min(rankedPoolSize, Math.max(0, props.getReserveAttached()));
+        }
+        if (quotaForRanked <= 0) {
+            // Either no attached tools exist or the floor is disabled (=0):
+            // nothing to rank — protected set is the whole result.
+            recordObservation(callbacks.length, protectedCount, start,
+                    TurMeterNames.REASON_ENGAGED);
+            return buildOrderedResult(callbacks, byName, Collections.emptyList(),
+                    protectedNames, topK).toArray(new ToolCallback[0]);
+        }
+
         List<String> rankedSurvivors = rankByBm25(byName, protectedNames, userMessage,
                 quotaForRanked);
 
+        List<ToolCallback> result = buildOrderedResult(callbacks, byName, rankedSurvivors,
+                protectedNames, topK);
+        if (log.isDebugEnabled()) {
+            log.debug("[ToolPreFilter] {} → {} tools (protected={}, ranked={}) for msg=\"{}\"",
+                    callbacks.length, result.size(), protectedNames.size(),
+                    rankedSurvivors.size(), truncate(userMessage, 60));
+        } else {
+            log.info("[ToolPreFilter] {} → {} tools (top-K={}, threshold={})",
+                    callbacks.length, result.size(), topK, minThreshold);
+        }
+        recordObservation(callbacks.length, result.size(), start, TurMeterNames.REASON_ENGAGED);
+        return result.toArray(new ToolCallback[0]);
+    }
+
+    /** Indexes callbacks by tool name (first wins), skipping nameless ones. */
+    private Map<String, ToolCallback> indexByName(ToolCallback[] callbacks) {
+        Map<String, ToolCallback> byName = new LinkedHashMap<>();
+        for (ToolCallback cb : callbacks) {
+            String name = safeName(cb);
+            if (name == null) continue;
+            byName.putIfAbsent(name, cb);
+        }
+        return byName;
+    }
+
+    /** Assembles the survivor list: protected tools (original order) then ranked survivors (score order). */
+    private List<ToolCallback> buildOrderedResult(ToolCallback[] callbacks,
+            Map<String, ToolCallback> byName, List<String> rankedSurvivors,
+            Set<String> protectedNames, int topK) {
         List<ToolCallback> result = new ArrayList<>(topK + protectedNames.size());
         Set<String> emitted = new HashSet<>();
         // 1) protected, in original order
@@ -228,16 +273,7 @@ public class TurToolPreFilterService {
                 if (cb != null) result.add(cb);
             }
         }
-        if (log.isDebugEnabled()) {
-            log.debug("[ToolPreFilter] {} → {} tools (protected={}, ranked={}) for msg=\"{}\"",
-                    callbacks.length, result.size(), protectedNames.size(),
-                    rankedSurvivors.size(), truncate(userMessage, 60));
-        } else {
-            log.info("[ToolPreFilter] {} → {} tools (top-K={}, threshold={})",
-                    callbacks.length, result.size(), topK, minThreshold);
-        }
-        recordObservation(callbacks.length, result.size(), start, TurMeterNames.REASON_ENGAGED);
-        return result.toArray(new ToolCallback[0]);
+        return result;
     }
 
     private void recordObservation(int input, int output, long startMillis, String reason) {
@@ -260,19 +296,9 @@ public class TurToolPreFilterService {
         try (Directory directory = new ByteBuffersDirectory()) {
             IndexWriterConfig cfg = new IndexWriterConfig(ANALYZER)
                     .setSimilarity(new BM25Similarity());
-            int docs = 0;
+            int docs;
             try (IndexWriter writer = new IndexWriter(directory, cfg)) {
-                for (Map.Entry<String, ToolCallback> entry : byName.entrySet()) {
-                    String name = entry.getKey();
-                    if (protectedNames.contains(name)) continue;
-                    String description = resolveDescription(name, entry.getValue());
-                    if (description == null || description.isBlank()) continue;
-                    Document doc = new Document();
-                    doc.add(new StringField(FIELD_NAME, name, Field.Store.YES));
-                    doc.add(new TextField(FIELD_DESCRIPTION, description, Field.Store.NO));
-                    writer.addDocument(doc);
-                    docs++;
-                }
+                docs = indexToolDescriptions(writer, byName, protectedNames);
                 writer.commit();
             }
             if (docs == 0) {
@@ -297,21 +323,8 @@ public class TurToolPreFilterService {
                     // agent could be left with zero tools.
                     return fallbackInsertionOrder(byName, protectedNames, quota);
                 }
-                StoredFields stored = searcher.storedFields();
-                List<String> survivors = new ArrayList<>(hits.scoreDocs.length);
-                for (ScoreDoc sd : hits.scoreDocs) {
-                    String name = stored.document(sd.doc).get(FIELD_NAME);
-                    if (name != null) survivors.add(name);
-                }
-                if (survivors.size() < quota) {
-                    // Fill leftover quota deterministically so the agent
-                    // never returns fewer tools than top-K allows.
-                    for (String name : fallbackInsertionOrder(byName, protectedNames, quota)) {
-                        if (survivors.size() >= quota) break;
-                        if (!survivors.contains(name)) survivors.add(name);
-                    }
-                }
-                return survivors;
+                return collectRankedSurvivors(hits, searcher.storedFields(),
+                        byName, protectedNames, quota);
             }
         } catch (IOException e) {
             log.warn("[ToolPreFilter] BM25 ranking failed, falling back to all tools: {}",
@@ -320,13 +333,61 @@ public class TurToolPreFilterService {
         }
     }
 
+    /**
+     * Indexes one BM25 document per non-protected tool that has a usable
+     * description. Returns the number of documents written.
+     */
+    private int indexToolDescriptions(IndexWriter writer, Map<String, ToolCallback> byName,
+            Set<String> protectedNames) throws IOException {
+        int docs = 0;
+        for (Map.Entry<String, ToolCallback> entry : byName.entrySet()) {
+            String name = entry.getKey();
+            if (protectedNames.contains(name)) {
+                continue;
+            }
+            String description = resolveDescription(name, entry.getValue());
+            if (description != null && !description.isBlank()) {
+                Document doc = new Document();
+                doc.add(new StringField(FIELD_NAME, name, Field.Store.YES));
+                doc.add(new TextField(FIELD_DESCRIPTION, description, Field.Store.NO));
+                writer.addDocument(doc);
+                docs++;
+            }
+        }
+        return docs;
+    }
+
+    /**
+     * Collects the ranked hit names, then deterministically fills any remaining
+     * quota from insertion order so the agent never gets fewer tools than top-K.
+     */
+    private List<String> collectRankedSurvivors(TopDocs hits, StoredFields stored,
+            Map<String, ToolCallback> byName, Set<String> protectedNames, int quota)
+            throws IOException {
+        List<String> survivors = new ArrayList<>(hits.scoreDocs.length);
+        for (ScoreDoc sd : hits.scoreDocs) {
+            String name = stored.document(sd.doc).get(FIELD_NAME);
+            if (name != null) survivors.add(name);
+        }
+        if (survivors.size() < quota) {
+            for (String name : fallbackInsertionOrder(byName, protectedNames, quota)) {
+                if (survivors.size() >= quota) break;
+                if (!survivors.contains(name)) survivors.add(name);
+            }
+        }
+        return survivors;
+    }
+
     private static List<String> fallbackInsertionOrder(Map<String, ToolCallback> byName,
             Set<String> protectedNames, int quota) {
         List<String> result = new ArrayList<>(quota);
         for (String name : byName.keySet()) {
-            if (result.size() >= quota) break;
-            if (protectedNames.contains(name)) continue;
-            result.add(name);
+            if (result.size() >= quota) {
+                break;
+            }
+            if (!protectedNames.contains(name)) {
+                result.add(name);
+            }
         }
         return result;
     }

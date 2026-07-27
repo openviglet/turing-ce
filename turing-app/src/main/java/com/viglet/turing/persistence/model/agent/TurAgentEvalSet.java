@@ -18,7 +18,7 @@ import org.hibernate.annotations.OnDelete;
 import org.hibernate.annotations.OnDeleteAction;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import com.viglet.turing.persistence.utils.TurAssignableUuidGenerator;
+import com.viglet.core.jpa.VigletAssignableUuidGenerator;
 
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
@@ -61,7 +61,7 @@ public class TurAgentEvalSet implements Serializable {
     private static final long serialVersionUID = 1L;
 
     @Id
-    @TurAssignableUuidGenerator
+    @VigletAssignableUuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
     private String id;
 
@@ -79,6 +79,23 @@ public class TurAgentEvalSet implements Serializable {
     /** 1 = the set runs in the gate; 0 = parked (authoring in progress). */
     @Column(nullable = false)
     private int enabled = 1;
+
+    /**
+     * T595 — optional bound {@link TurEvalDataset}. When set, the runner sources
+     * this set's cases from the dataset's rows instead of the inline {@link
+     * #cases} (a set thus binds a reusable dataset + its grader stack). Null =
+     * legacy inline cases (byte-identical).
+     */
+    @Column(name = "datasetId", length = 36)
+    private String datasetId;
+
+    /**
+     * T600 — optional bound reusable {@link TurEvalGraderStack}. When set, the
+     * runner uses the stack's grader configs instead of this set's own {@link
+     * #graderConfigs}. Null = the set's own configs (or the legacy default stack).
+     */
+    @Column(name = "graderStackId", length = 36)
+    private String graderStackId;
 
     /**
      * When 1, a red gate result hard-blocks the flow editor's publish; when
@@ -100,6 +117,19 @@ public class TurAgentEvalSet implements Serializable {
     @OnDelete(action = OnDeleteAction.CASCADE)
     @OrderBy("sortOrder ASC")
     private Set<TurAgentEvalCase> cases = new LinkedHashSet<>();
+
+    /**
+     * T587 / §XXXIII.2 — the set's grader stack (which graders score its cases,
+     * their order + config). Same aggregate lifecycle as {@link #cases}: eagerly
+     * loaded and cascade-persisted with the set, so it travels in export/import
+     * and is available to the non-transactional eval runner. An empty stack ⇒
+     * the registry falls back to the legacy default (slot/outcome/node/rubric).
+     */
+    @OneToMany(mappedBy = "turAgentEvalSet", orphanRemoval = true,
+            fetch = FetchType.EAGER, cascade = CascadeType.ALL)
+    @OnDelete(action = OnDeleteAction.CASCADE)
+    @OrderBy("sortOrder ASC")
+    private Set<TurEvalGraderConfig> graderConfigs = new LinkedHashSet<>();
 
     /**
      * Owning AI agent. Hidden from JSON because the client always knows the

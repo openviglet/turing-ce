@@ -8,6 +8,48 @@ import type { TurSEInstance } from "../se/se-instance.model.ts";
  */
 export type TurRagBm25Source = "EMBEDDED" | "SE_INSTANCE";
 
+/**
+ * T383 / §XX.3 — ranking mode for the PUBLIC SN search (faceted catalog
+ * results), distinct from the RAG flags which only affect the chat
+ * knowledge-base tool. `LEGACY` (default) is lexical-only; `HYBRID_RRF`
+ * fuses BM25 + a vector ranking of the same documents via Reciprocal Rank
+ * Fusion (k=60) when the sort is relevance. `HYBRID_RRF_RERANK` (T389)
+ * additionally re-orders the fused page through the Block N reranker strategy
+ * seam (LLM | CROSS_ENCODER | COHERE, selected in Global Settings).
+ */
+export type TurSNRankingMode = "LEGACY" | "HYBRID_RRF" | "HYBRID_RRF_RERANK";
+
+/**
+ * T790 / §LIV.1 (Block BF) — the site's knowledge-base MODE: the explicitly-named
+ * retrieval strategy that grounds its GenAI answers. `VECTOR` (default) is the
+ * classic embedding RAG chat and needs a full embedding-model + vector-store
+ * setup; `VECTORLESS_STRUCTURED` is the catalog copilot (NL→DSL over the declared
+ * field schema, no embeddings) and needs only a default LLM; `HYBRID` exposes both
+ * on the same site. Naming the vectorless path makes it discoverable to an
+ * integrator who wants LLM Q&A over structured data without standing up a vector DB.
+ */
+export type TurSNKnowledgeBaseMode = "VECTOR" | "VECTORLESS_STRUCTURED" | "HYBRID";
+
+/**
+ * T818 / §LIX.1 (Block BK) — the catalog copilot's query-planning STRATEGY: how a
+ * natural-language question becomes a structured DSL query.
+ *
+ * - `DETERMINISTIC` — today's path: the deterministic ranking planner resolves any
+ *   superlative / "sorted by" intent, then a single LLM facet parse handles the rest.
+ *   Instant and cheap, but the ranking lexicon is English-only.
+ * - `LLM_ASSISTED` — multi-pass parse → judge → refine. Understands other languages
+ *   natively and repairs a dropped facet / missing sort, at N× LLM calls per turn.
+ * - `HYBRID` — the deterministic fast-path, escalating to the LLM passes only when
+ *   retrieval comes back empty or the plan is degenerate.
+ *
+ * `null`/absent inherits the deployment default
+ * (`turing.genai.copilot.planning.strategy`, itself `DETERMINISTIC`).
+ */
+export type TurCopilotPlanningStrategy =
+  | "DETERMINISTIC"
+  | "LLM_ASSISTED"
+  | "HYBRID";
+
 export interface TurSNSiteGenAi {
   id: string;
   /**
@@ -51,6 +93,70 @@ export interface TurSNSiteGenAi {
    * @since 2026.2.7
    */
   ragSeInstance?: TurSEInstance | null;
+  /**
+   * T383 / §XX.3 — ranking mode for the public SN search. `LEGACY` (default)
+   * keeps lexical-only ranking; `HYBRID_RRF` opts into BM25 + vector RRF
+   * fusion; `HYBRID_RRF_RERANK` (T389) adds the reranker stage on top.
+   * Independent of the `rag*` flags above. @since 2026.3.1
+   */
+  snRankingMode?: TurSNRankingMode;
+  /**
+   * T790 / §LIV.1 (Block BF) — knowledge-base mode. `VECTOR` (default) is the
+   * classic embedding RAG chat; `VECTORLESS_STRUCTURED` is the catalog copilot
+   * (NL→DSL over the declared field schema, no embeddings, needs only a default
+   * LLM); `HYBRID` exposes both. @since 2026.3.4
+   */
+  knowledgeBaseMode?: TurSNKnowledgeBaseMode;
+  /**
+   * T818 / §LIX.1 (Block BK) — the copilot's query-planning strategy. `null`
+   * inherits the deployment default (`DETERMINISTIC` = today's behaviour), so an
+   * existing site is unchanged. @since 2026.3.4
+   */
+  copilotPlanningStrategy?: TurCopilotPlanningStrategy | null;
+  /**
+   * T819 / §LIX.2 (Block BK) — analysis depth for the LLM planning strategies: how
+   * many LLM passes beyond the initial parse may run (0 = parse only, 1 = + judge,
+   * 2 = + refine). `null` inherits `turing.genai.copilot.planning.max-passes`.
+   * Ignored when the resolved strategy is `DETERMINISTIC`. @since 2026.3.4
+   */
+  copilotPlanningMaxPasses?: number | null;
+  /**
+   * T472 / §XXVI.9 — opt-in for the index-time content-fit (readability)
+   * signal. When `true` and {@link contentFitPersonaId} resolves to an
+   * AUDIENCE/BOTH persona, each document is scored against that audience as it
+   * is indexed and the 0–100 fit score is stored as the `content_fit_score`
+   * SN field, surfaced by the content-fit coverage report. Default `false`
+   * keeps the indexing path unchanged. @since 2026.3.4
+   */
+  contentFitIndexingEnabled?: boolean;
+  /**
+   * T472 / §XXVI.9 — target-audience `TurPersona` id read as the reader proxy
+   * by the index-time scorer. Null/blank disables the signal even when
+   * {@link contentFitIndexingEnabled} is `true`. @since 2026.3.4
+   */
+  contentFitPersonaId?: string | null;
+  /**
+   * T501 / §X.19 — opt-in for index-time native video/audio understanding. When
+   * `true` and the site's GenAI agent resolves to a Gemini LLM, a document that
+   * references a video/audio asset (a `media_url` attribute, or a media-typed
+   * `url`) is run through Gemini understanding as it is indexed and the resulting
+   * timestamped transcript + scene description is appended to the document's text
+   * field — so the clip's content becomes searchable. Gemini-only, fail-open;
+   * spends one LLM call per media document. Default `false` keeps indexing
+   * unchanged. @since 2026.3.4
+   */
+  mediaUnderstandingIndexingEnabled?: boolean;
+  /**
+   * T513 / §XXVIII.9 — per-site domain-specialized embedding model override
+   * (`TurEmbeddingModel` id). When set, the public SN hybrid-ranking path
+   * indexes AND queries this site's `sn_<siteId>` vector collection through the
+   * chosen embedder — so a legal site can pick `voyage-law`, a code site
+   * `voyage-code`, etc., while other sites stay on the platform default.
+   * Null/blank falls back to the Global Settings default embedding model.
+   * Switching the model requires clearing + re-indexing the site's collection
+   * (the vector space changes). @since 2026.3.4
+   */
+  embeddingModelId?: string | null;
 }
 
 /**

@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.stereotype.Service;
@@ -63,6 +64,10 @@ import tools.jackson.databind.node.ObjectNode;
 @Slf4j
 @Service
 public class TurChatFlowVariantService {
+
+    // --- S1192: extracted duplicated literals ---
+    private static final String NODES = "nodes";
+
 
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
@@ -148,53 +153,53 @@ public class TurChatFlowVariantService {
     /* ─────────────────────── Extraction & apply ─────────────────────── */
 
     private List<Map<String, Object>> extractCopyTable(JsonNode root) {
-        JsonNode nodes = root.path("nodes");
+        JsonNode nodes = root.path(NODES);
         if (!nodes.isArray()) {
             return List.of();
         }
         List<Map<String, Object>> rows = new ArrayList<>();
         for (JsonNode node : nodes) {
-            String id = textOrNull(node, "id");
-            String type = textOrNull(node, "type");
-            if (id == null || type == null || "start".equals(type) || "end".equals(type)) {
-                continue;
-            }
-            JsonNode data = node.path("data");
-            if (!data.isObject()) {
-                continue;
-            }
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("id", id);
-            row.put("type", type);
-            boolean anyCopy = false;
-            for (String field : REWRITABLE_FIELDS) {
-                String value = textOrNull(data, field);
-                if (value != null && !value.isBlank()) {
-                    row.put(field, value);
-                    anyCopy = true;
-                }
-            }
-            if (anyCopy) {
-                rows.add(row);
-            }
+            buildCopyRow(node).ifPresent(rows::add);
         }
         return rows;
     }
 
+    /**
+     * Builds the rewritable-copy row for one graph node, or empty when the
+     * node is structural (start/end), malformed, or carries no rewritable copy.
+     */
+    private Optional<Map<String, Object>> buildCopyRow(JsonNode node) {
+        String id = textOrNull(node, "id");
+        String type = textOrNull(node, "type");
+        if (id == null || type == null || "start".equals(type) || "end".equals(type)) {
+            return Optional.empty();
+        }
+        JsonNode data = node.path("data");
+        if (!data.isObject()) {
+            return Optional.empty();
+        }
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("id", id);
+        row.put("type", type);
+        boolean anyCopy = false;
+        for (String field : REWRITABLE_FIELDS) {
+            String value = textOrNull(data, field);
+            if (value != null && !value.isBlank()) {
+                row.put(field, value);
+                anyCopy = true;
+            }
+        }
+        return anyCopy ? Optional.of(row) : Optional.empty();
+    }
+
     private List<String> applyRewrite(JsonNode root, ObjectNode rewrite) {
-        JsonNode rewrittenNodes = rewrite.path("nodes");
+        JsonNode rewrittenNodes = rewrite.path(NODES);
         if (!rewrittenNodes.isArray()) {
             return List.of();
         }
 
         // Index source nodes by id so we don't pay O(N²) walking the array per LLM patch.
-        Map<String, ObjectNode> sourceNodeById = new LinkedHashMap<>();
-        for (JsonNode node : root.path("nodes")) {
-            String id = textOrNull(node, "id");
-            if (id != null && node instanceof ObjectNode objectNode) {
-                sourceNodeById.put(id, objectNode);
-            }
-        }
+        Map<String, ObjectNode> sourceNodeById = indexNodesById(root);
 
         List<String> changed = new ArrayList<>();
         for (JsonNode patch : rewrittenNodes) {
@@ -202,35 +207,55 @@ public class TurChatFlowVariantService {
             if (id == null) {
                 continue;
             }
-            ObjectNode sourceNode = sourceNodeById.get(id);
-            if (sourceNode == null) {
-                log.debug("[ChatFlowVariant] LLM rewrote unknown node id '{}' — skipping", id);
+            if (applyNodePatch(id, patch, sourceNodeById)) {
+                changed.add(id);
+            }
+        }
+        return changed;
+    }
+
+    /** Indexes the source flow's nodes by their id for O(1) patch lookup. */
+    private Map<String, ObjectNode> indexNodesById(JsonNode root) {
+        Map<String, ObjectNode> sourceNodeById = new LinkedHashMap<>();
+        for (JsonNode node : root.path(NODES)) {
+            String id = textOrNull(node, "id");
+            if (id != null && node instanceof ObjectNode objectNode) {
+                sourceNodeById.put(id, objectNode);
+            }
+        }
+        return sourceNodeById;
+    }
+
+    /**
+     * Applies one LLM patch to the matching source node's {@code data},
+     * overwriting only the rewritable fields whose value actually changed.
+     * Returns true when at least one field was updated.
+     */
+    private boolean applyNodePatch(String id, JsonNode patch, Map<String, ObjectNode> sourceNodeById) {
+        ObjectNode sourceNode = sourceNodeById.get(id);
+        if (sourceNode == null) {
+            log.debug("[ChatFlowVariant] LLM rewrote unknown node id '{}' — skipping", id);
+            return false;
+        }
+        JsonNode dataNode = sourceNode.path("data");
+        if (!(dataNode instanceof ObjectNode dataObject)) {
+            return false;
+        }
+        boolean nodeChanged = false;
+        for (String field : REWRITABLE_FIELDS) {
+            if (!patch.has(field)) {
                 continue;
             }
-            JsonNode dataNode = sourceNode.path("data");
-            if (!(dataNode instanceof ObjectNode dataObject)) {
-                continue;
-            }
-            boolean nodeChanged = false;
-            for (String field : REWRITABLE_FIELDS) {
-                if (!patch.has(field)) {
-                    continue;
-                }
-                String newValue = textOrNull(patch, field);
-                if (newValue == null) {
-                    continue;
-                }
+            String newValue = textOrNull(patch, field);
+            if (newValue != null) {
                 String oldValue = textOrNull(dataObject, field);
                 if (!newValue.equals(oldValue)) {
                     dataObject.put(field, newValue);
                     nodeChanged = true;
                 }
             }
-            if (nodeChanged) {
-                changed.add(id);
-            }
         }
-        return changed;
+        return nodeChanged;
     }
 
     /* ─────────────────────── LLM round-trip ─────────────────────── */
@@ -312,12 +337,12 @@ public class TurChatFlowVariantService {
 
     private static String textOrNull(JsonNode node, String field) {
         JsonNode value = node.path(field);
-        return value.isTextual() ? value.asText() : null;
+        return value.isString() ? value.asString() : null;
     }
 
     private static String extractText(ObjectNode node, String field) {
         JsonNode value = node.path(field);
-        return value.isTextual() ? value.asText() : null;
+        return value.isString() ? value.asString() : null;
     }
 
     private static String safe(String s) {
@@ -339,7 +364,7 @@ public class TurChatFlowVariantService {
             - Schema:
               {
                 "summary": "one short sentence (<=200 chars) describing what you changed",
-                "nodes": [
+                NODES: [
                   { "id": "<existing-id>",
                     "label": "...",                  // optional, only if changed
                     "aiInstruction": "...",          // optional, only if changed
@@ -354,8 +379,8 @@ public class TurChatFlowVariantService {
               functionName, mcpServerId, slotName, slotOperation, switchOptions,
               edges) MUST be left untouched — omit those fields from your
               response entirely.
-            - Omit a node from the "nodes" array if its copy did not need to
-              change. An empty "nodes" array is acceptable when the
+            - Omit a node from the NODES array if its copy did not need to
+              change. An empty NODES array is acceptable when the
               instruction was a no-op.
 
             ════════════ WHAT EACH FIELD IS ════════════

@@ -77,6 +77,10 @@ import com.viglet.turing.sn.TurSNSearchProcess;
 @Service
 public class TurCustomToolSearchHelper {
 
+    // --- S1192: extracted duplicated literals ---
+    private static final String TEMPLATE_NAME = "templateName";
+
+
     private static final Logger log = LoggerFactory.getLogger(TurCustomToolSearchHelper.class);
     private static final int DEFAULT_TOP_K = 8;
     private static final int MAX_TOP_K = 200;
@@ -246,12 +250,11 @@ public class TurCustomToolSearchHelper {
         List<Map<String, Object>> out = new java.util.ArrayList<>(Math.min(hits.size(), limit));
         for (Map<String, Object> hit : hits) {
             String key = firstNonBlank(hit, dedupKeys);
-            if (key == null || !seen.add(key)) {
-                continue;
-            }
-            out.add(hit);
-            if (out.size() >= limit) {
-                break;
+            if (key != null && seen.add(key)) {
+                out.add(hit);
+                if (out.size() >= limit) {
+                    break;
+                }
             }
         }
         return out;
@@ -282,30 +285,41 @@ public class TurCustomToolSearchHelper {
             if (trimmed.isEmpty() || DEDUP_NONE.equalsIgnoreCase(trimmed)) {
                 return Collections.emptyList();
             }
-            // Custom key first, then fall back to defaults — keeps the helper
-            // resilient against indexes that omit the requested field.
-            List<String> ordered = new java.util.ArrayList<>();
-            ordered.add(trimmed);
-            for (String def : DEFAULT_DEDUP_KEYS) {
-                if (!def.equalsIgnoreCase(trimmed)) {
-                    ordered.add(def);
-                }
-            }
-            return ordered;
+            return dedupKeysFromString(trimmed);
         }
         if (dedupBy instanceof List<?> list) {
-            List<String> ordered = new java.util.ArrayList<>();
-            java.util.Set<String> seen = new java.util.HashSet<>();
-            for (Object o : list) {
-                if (o == null) continue;
-                String key = o.toString().trim();
-                if (!key.isEmpty() && seen.add(key.toLowerCase(Locale.ROOT))) {
-                    ordered.add(key);
-                }
-            }
-            return ordered.isEmpty() ? DEFAULT_DEDUP_KEYS : ordered;
+            return dedupKeysFromList(list);
         }
         return DEFAULT_DEDUP_KEYS;
+    }
+
+    /**
+     * Custom key first, then the defaults — keeps dedup resilient against
+     * indexes that omit the requested field.
+     */
+    private static List<String> dedupKeysFromString(String trimmed) {
+        List<String> ordered = new java.util.ArrayList<>();
+        ordered.add(trimmed);
+        for (String def : DEFAULT_DEDUP_KEYS) {
+            if (!def.equalsIgnoreCase(trimmed)) {
+                ordered.add(def);
+            }
+        }
+        return ordered;
+    }
+
+    /** De-duplicates the requested key list (case-insensitive), defaulting when empty. */
+    private static List<String> dedupKeysFromList(List<?> list) {
+        List<String> ordered = new java.util.ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (Object o : list) {
+            if (o == null) continue;
+            String key = o.toString().trim();
+            if (!key.isEmpty() && seen.add(key.toLowerCase(Locale.ROOT))) {
+                ordered.add(key);
+            }
+        }
+        return ordered.isEmpty() ? DEFAULT_DEDUP_KEYS : ordered;
     }
 
     /**
@@ -445,18 +459,14 @@ public class TurCustomToolSearchHelper {
         if (sort != null && !sort.isBlank()) snParams.setSort(sort);
         snParams.setLocale(resolveLocale(asString(params, "locale"), site));
 
-        List<String> fq = asStringList(params.get("fq"));
-        // templateName=<v> shorthand → fq+="templateName:<v>". Mirrors the
-        // ann() helper's same-named shortcut for muscle-memory parity.
-        Object templateName = params.get("templateName");
-        if (templateName != null) {
-            String tn = templateName.toString().trim();
-            if (!tn.isEmpty()) {
-                if (fq == null) fq = new ArrayList<>();
-                else fq = new ArrayList<>(fq);
-                fq.add("templateName:" + tn);
-            }
-        }
+        applyFilterQueries(snParams, params);
+
+        return snParams;
+    }
+
+    /** Applies the fq / fqAnd / fqOr / fqOp / fqiOp / fl filter-query params onto {@code snParams}. */
+    private void applyFilterQueries(TurSNSearchParams snParams, Map<String, Object> params) {
+        List<String> fq = appendTemplateNameFilter(params, asStringList(params.get("fq")));
         if (fq != null && !fq.isEmpty()) snParams.setFq(fq);
 
         List<String> fqAnd = asStringList(params.get("fqAnd"));
@@ -471,8 +481,25 @@ public class TurCustomToolSearchHelper {
 
         List<String> fl = asStringList(params.get("fl"));
         if (fl != null && !fl.isEmpty()) snParams.setFl(fl);
+    }
 
-        return snParams;
+    /**
+     * Applies the {@code templateName=<v>} shorthand → {@code fq+="templateName:<v>"}
+     * (mirrors the ann() helper's same-named shortcut). Returns the (possibly new)
+     * filter-query list, leaving {@code fq} untouched when there's no template name.
+     */
+    private List<String> appendTemplateNameFilter(Map<String, Object> params, List<String> fq) {
+        Object templateName = params.get(TEMPLATE_NAME);
+        if (templateName == null) {
+            return fq;
+        }
+        String tn = templateName.toString().trim();
+        if (tn.isEmpty()) {
+            return fq;
+        }
+        List<String> result = fq == null ? new ArrayList<>() : new ArrayList<>(fq);
+        result.add("templateName:" + tn);
+        return result;
     }
 
     /**
@@ -513,7 +540,7 @@ public class TurCustomToolSearchHelper {
 
     @SuppressWarnings("unchecked")
     private static List<String> asStringList(Object raw) {
-        if (raw == null) return null;
+        if (raw == null) return List.of();
         if (raw instanceof List<?> list) {
             List<String> out = new ArrayList<>(list.size());
             for (Object o : list) {
@@ -525,9 +552,9 @@ public class TurCustomToolSearchHelper {
             // Single string → singleton list. Groovy callers often pass
             // a bare string for the common case ({@code fq: "area:tech"}).
             String trimmed = s.trim();
-            return trimmed.isEmpty() ? null : List.of(trimmed);
+            return trimmed.isEmpty() ? List.of() : List.of(trimmed);
         }
-        return null;
+        return List.of();
     }
 
     private static TurSNFilterQueryOperator asFqOperator(Object raw) {
@@ -558,35 +585,43 @@ public class TurCustomToolSearchHelper {
         Object filters = params.get("filters");
         Map<String, List<String>> resolved = new LinkedHashMap<>();
         if (filters instanceof Map<?, ?> rawMap) {
-            for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
-                String key = String.valueOf(entry.getKey());
-                Object value = entry.getValue();
-                if (value instanceof List<?> list) {
-                    List<String> stringList = new ArrayList<>(list.size());
-                    for (Object o : list) {
-                        if (o != null) stringList.add(String.valueOf(o));
-                    }
-                    resolved.put(key, stringList);
-                } else if (value != null) {
-                    resolved.put(key, List.of(String.valueOf(value)));
-                }
-            }
+            parseFilterMap(rawMap, resolved);
         }
         // Shorthand: templateName=string → filters.templateName=[string]
-        Object templateName = params.get("templateName");
-        if (templateName != null && !resolved.containsKey("templateName")) {
-            resolved.put("templateName", List.of(String.valueOf(templateName)));
+        Object templateName = params.get(TEMPLATE_NAME);
+        if (templateName != null) {
+            resolved.computeIfAbsent(TEMPLATE_NAME, k -> List.of(String.valueOf(templateName)));
         }
         return resolved;
+    }
+
+    /** Normalises each raw filter entry into a {@code key → List<String>} pair. */
+    private static void parseFilterMap(Map<?, ?> rawMap, Map<String, List<String>> resolved) {
+        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+            String key = String.valueOf(entry.getKey());
+            Object value = entry.getValue();
+            if (value instanceof List<?> list) {
+                resolved.put(key, toStringList(list));
+            } else if (value != null) {
+                resolved.put(key, List.of(String.valueOf(value)));
+            }
+        }
+    }
+
+    /** Converts a heterogeneous list to a list of non-null string values. */
+    private static List<String> toStringList(List<?> list) {
+        List<String> stringList = new ArrayList<>(list.size());
+        for (Object o : list) {
+            if (o != null) stringList.add(String.valueOf(o));
+        }
+        return stringList;
     }
 
     private static List<Map<String, Object>> toHitList(List<Document> hits) {
         List<Map<String, Object>> out = new ArrayList<>(hits.size());
         for (Document doc : hits) {
             Map<String, Object> hit = new LinkedHashMap<>();
-            if (doc.getMetadata() != null) {
-                hit.putAll(doc.getMetadata());
-            }
+            hit.putAll(doc.getMetadata());
             // Reserved fields come AFTER the metadata so they always win when a
             // metadata key happens to use one of these names.
             hit.put("id", doc.getId());

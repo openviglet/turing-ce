@@ -115,47 +115,39 @@ public class TurRagFacetExtractor {
             return cached.values();
         }
 
+        Map<String, Set<String>> aggregator = scanFacets(infra, key);
+        Map<String, List<String>> result = buildFacetResult(aggregator);
+        cache.put(key, new CachedFacets(result, System.currentTimeMillis() + CACHE_TTL_MILLIS));
+        log.debug("Cached {} facet keys for collection '{}'", result.size(), key);
+        return result;
+    }
+
+    /**
+     * Pages through the store (up to {@link #FACET_SAMPLE_SIZE} chunks) and
+     * aggregates distinct metadata values per key. Stores that don't implement
+     * {@code listChunks} (older deploys) yield an empty aggregator — facet
+     * auto-extraction is simply skipped.
+     *
+     * @since 2026.3.1
+     */
+    private Map<String, Set<String>> scanFacets(RagInfrastructure infra, String key) {
         Map<String, Set<String>> aggregator = new LinkedHashMap<>();
         try {
             int page = 0;
             int collected = 0;
-            while (collected < FACET_SAMPLE_SIZE) {
+            boolean morePages = true;
+            while (morePages && collected < FACET_SAMPLE_SIZE) {
                 TurStoreChunkPage chunkPage = infra.storeProvider().listChunks(
                         infra.storeInstance(), infra.storeCredential(),
                         infra.collectionName(), page, FACET_PAGE_SIZE, null);
                 if (chunkPage == null || chunkPage.chunks() == null || chunkPage.chunks().isEmpty()) {
-                    break;
+                    morePages = false;
+                } else {
+                    collected = accumulatePage(chunkPage, aggregator, collected);
+                    // A short page means we've reached the end of the collection.
+                    morePages = chunkPage.chunks().size() >= FACET_PAGE_SIZE;
+                    page++;
                 }
-                for (TurStoreChunkPage.Chunk chunk : chunkPage.chunks()) {
-                    if (chunk.metadata() == null) {
-                        continue;
-                    }
-                    for (var entry : chunk.metadata().entrySet()) {
-                        String k = entry.getKey();
-                        Object v = entry.getValue();
-                        if (k == null || EXCLUDED_KEYS.contains(k) || isInternalKey(k) || v == null) {
-                            continue;
-                        }
-                        Set<String> set = aggregator.computeIfAbsent(k, ignored -> new LinkedHashSet<>());
-                        if (v instanceof Collection<?> col) {
-                            for (Object o : col) {
-                                if (o != null) {
-                                    set.add(o.toString());
-                                }
-                            }
-                        } else if (v instanceof CharSequence || v instanceof Number || v instanceof Boolean) {
-                            set.add(v.toString());
-                        }
-                    }
-                    collected++;
-                    if (collected >= FACET_SAMPLE_SIZE) {
-                        break;
-                    }
-                }
-                if (chunkPage.chunks().size() < FACET_PAGE_SIZE) {
-                    break;
-                }
-                page++;
             }
         } catch (UnsupportedOperationException e) {
             // Store provider doesn't implement listChunks (older deploys); no
@@ -164,7 +156,73 @@ public class TurRagFacetExtractor {
         } catch (Exception e) {
             log.warn("Failed to scan facets for collection '{}': {}", key, e.getMessage());
         }
+        return aggregator;
+    }
 
+    /**
+     * Folds one page of chunks into the aggregator, returning the running
+     * sampled-chunk count. Chunks without metadata don't count toward the
+     * sample (preserving the legacy {@code continue}); stops early once the
+     * sample size is reached.
+     *
+     * @since 2026.3.1
+     */
+    private int accumulatePage(TurStoreChunkPage chunkPage, Map<String, Set<String>> aggregator, int collected) {
+        for (TurStoreChunkPage.Chunk chunk : chunkPage.chunks()) {
+            if (chunk.metadata() != null) {
+                accumulateChunkMetadata(chunk, aggregator);
+                collected++;
+                if (collected >= FACET_SAMPLE_SIZE) {
+                    break;
+                }
+            }
+        }
+        return collected;
+    }
+
+    /**
+     * Adds a single chunk's eligible metadata values to the aggregator, skipping
+     * excluded / internal keys and null values.
+     *
+     * @since 2026.3.1
+     */
+    private void accumulateChunkMetadata(TurStoreChunkPage.Chunk chunk, Map<String, Set<String>> aggregator) {
+        for (var entry : chunk.metadata().entrySet()) {
+            String k = entry.getKey();
+            Object v = entry.getValue();
+            if (k == null || EXCLUDED_KEYS.contains(k) || isInternalKey(k) || v == null) {
+                continue;
+            }
+            Set<String> set = aggregator.computeIfAbsent(k, ignored -> new LinkedHashSet<>());
+            addFacetValue(set, v);
+        }
+    }
+
+    /**
+     * Appends a metadata value to its facet's value set: collections are flattened
+     * (non-null elements), and scalar string/number/boolean values are stringified.
+     *
+     * @since 2026.3.1
+     */
+    private static void addFacetValue(Set<String> set, Object v) {
+        if (v instanceof Collection<?> col) {
+            for (Object o : col) {
+                if (o != null) {
+                    set.add(o.toString());
+                }
+            }
+        } else if (v instanceof CharSequence || v instanceof Number || v instanceof Boolean) {
+            set.add(v.toString());
+        }
+    }
+
+    /**
+     * Keeps only facets whose distinct-value count falls within
+     * [{@link #MIN_VALUES_PER_FACET}, {@link #MAX_VALUES_PER_FACET}].
+     *
+     * @since 2026.3.1
+     */
+    private Map<String, List<String>> buildFacetResult(Map<String, Set<String>> aggregator) {
         Map<String, List<String>> result = new LinkedHashMap<>();
         for (var entry : aggregator.entrySet()) {
             int size = entry.getValue().size();
@@ -173,8 +231,6 @@ public class TurRagFacetExtractor {
             }
             result.put(entry.getKey(), new ArrayList<>(entry.getValue()));
         }
-        cache.put(key, new CachedFacets(result, System.currentTimeMillis() + CACHE_TTL_MILLIS));
-        log.debug("Cached {} facet keys for collection '{}'", result.size(), key);
         return result;
     }
 
@@ -213,9 +269,16 @@ public class TurRagFacetExtractor {
                     - Return ONLY the JSON object — no prose, no markdown, no commentary.
                     """.formatted(facetsJson);
 
+            // T707 — pin temperature to 0 so the same query maps to the same
+            // filters run-to-run. Non-deterministic extraction was the root cause
+            // of intermittent "not in this site" refusals: one sampling could
+            // pick a facet that zeroed the filtered search. builderFrom keeps the
+            // provider-specific options type (avoids the OpenAI hard-cast CCE).
+            var options = TurChatToolOptions.builderFrom(chatModel);
+            options.temperature(0.0);
             Prompt prompt = new Prompt(List.of(
                     new SystemMessage(systemPrompt),
-                    new UserMessage(query)));
+                    new UserMessage(query)), options.build());
             String response = chatModel.call(prompt).getResult().getOutput().getText();
             Map<String, List<String>> parsed = parseFilters(response);
             // Final defensive pass: drop keys/values not present in availableFacets so a
@@ -264,32 +327,42 @@ public class TurRagFacetExtractor {
             if (!(filtersObj instanceof Map<?, ?> map)) {
                 return Map.of();
             }
-            Map<String, List<String>> result = new LinkedHashMap<>();
-            for (var entry : map.entrySet()) {
-                String key = entry.getKey() == null ? null : entry.getKey().toString();
-                if (key == null || key.isBlank()) {
-                    continue;
-                }
-                Object value = entry.getValue();
-                List<String> values = new ArrayList<>();
-                if (value instanceof Collection<?> col) {
-                    for (Object o : col) {
-                        if (o != null) {
-                            values.add(o.toString());
-                        }
-                    }
-                } else if (value != null) {
-                    values.add(value.toString());
-                }
-                if (!values.isEmpty()) {
-                    result.put(key, values);
-                }
-            }
-            return result;
+            return collectFilterEntries(map);
         } catch (Exception e) {
             log.debug("Could not parse facet-extraction LLM response: {}", response);
             return Map.of();
         }
+    }
+
+    /** Builds the {@code key → values} filter map from the raw {@code filters} object. */
+    private static Map<String, List<String>> collectFilterEntries(Map<?, ?> map) {
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        for (var entry : map.entrySet()) {
+            String key = entry.getKey() == null ? null : entry.getKey().toString();
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            List<String> values = toStringValues(entry.getValue());
+            if (!values.isEmpty()) {
+                result.put(key, values);
+            }
+        }
+        return result;
+    }
+
+    /** Coerces a scalar or collection filter value into a list of non-null strings. */
+    private static List<String> toStringValues(Object value) {
+        List<String> values = new ArrayList<>();
+        if (value instanceof Collection<?> col) {
+            for (Object o : col) {
+                if (o != null) {
+                    values.add(o.toString());
+                }
+            }
+        } else if (value != null) {
+            values.add(value.toString());
+        }
+        return values;
     }
 
     /**

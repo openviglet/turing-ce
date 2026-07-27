@@ -6,11 +6,77 @@
 # Turing
 # ---------------------------------------------------------------------------
 turing:
-  ai.crypto.key: sample-key-for-crypto
+  # Master key for AES/GCM encryption of all stored provider API keys and store
+  # credentials. MUST be supplied via the environment in production; the blank
+  # default makes the production profile fail fast (T639 / §XXXVII.1). Outside
+  # production an insecure dev fallback is used (warned once). Never commit a
+  # real value here. Rotation: docs/operations/crypto-key-rotation.md
+  ai.crypto.key: ${TURING_AI_CRYPTO_KEY:}
   allowedOrigins: http://localhost:4200,http://localhost:5173
-  permissions: false
+  # T642 / §XXXVII.4 — when false, ANY authenticated principal is granted
+  # ROLE_ADMIN + every privilege (see TurCustomUserDetailsService /
+  # TurAuthTokenHeaderFilter), which nullifies all ~240 method-level checks and
+  # turns authentication into super-admin. The shipped default is now `true`
+  # (enforce real per-user authorities; the seeded `admin` keeps full rights via
+  # the Administrator group). Set to `false` only for a deliberately trusted
+  # single-user deployment — a startup WARNING is logged when you do.
+  permissions: true
+  # The LLM-instance model picker's fallback catalog is served from the public
+  # catalog API published by the dedicated openviglet/model-catalog repo. It is
+  # remote-only (no bundled copy): the fetch is best-effort, runs off the boot path
+  # on a TTL, and never blocks startup. Until the first successful fetch (or with
+  # remote-enabled=false) the picker falls back to live vendor listing only.
+  model-catalog:
+    url: ${TURING_MODEL_CATALOG_URL:https://openviglet.github.io/model-catalog/catalog.json}
+    remote-enabled: ${TURING_MODEL_CATALOG_REMOTE_ENABLED:true}
+    refresh-initial-delay-ms: ${TURING_MODEL_CATALOG_REFRESH_INITIAL_DELAY_MS:8000}
+    refresh-interval-ms: ${TURING_MODEL_CATALOG_REFRESH_INTERVAL_MS:21600000}
+    # T777 / §LIII.1 — auto-seed & refresh the per-model price table (tur_llm_price)
+    # from the catalog's indicative pricing on a TTL. Only CATALOG-sourced rows are
+    # written; an operator's MANUAL (negotiated / hand-edited) rate is never
+    # overwritten. Set enabled=false to keep the price table manual-only.
+    price-sync:
+      enabled: ${TURING_MODEL_CATALOG_PRICE_SYNC_ENABLED:true}
+      initial-delay-ms: ${TURING_MODEL_CATALOG_PRICE_SYNC_INITIAL_DELAY_MS:15000}
+      interval-ms: ${TURING_MODEL_CATALOG_PRICE_SYNC_INTERVAL_MS:21600000}
+    # T788 / §LIII.4 — optional email when the catalog change feed affects a model
+    # you use (removed / superseded / changed). Opt-in (default off) so no surprise
+    # mail; the in-UI change-feed banner is always on. Deduped per notification set;
+    # sends to the recipient configured in Global Settings.
+    change-feed:
+      email-enabled: ${TURING_MODEL_CATALOG_CHANGE_FEED_EMAIL_ENABLED:false}
+      email-initial-delay-ms: ${TURING_MODEL_CATALOG_CHANGE_FEED_EMAIL_INITIAL_DELAY_MS:45000}
+      email-interval-ms: ${TURING_MODEL_CATALOG_CHANGE_FEED_EMAIL_INTERVAL_MS:86400000}
   tenancy:
     enabled: false
+    # T334 / §XIV.8.1 — shared secret for trusted server-to-server callers. When
+    # set, a request carrying a matching `X-Turing-Internal-Token` header may
+    # stamp `X-Turing-Tenant` to scope the call to an end user's tenant without
+    # that user's membership (a suspended tenant still blocks). Leave empty (the
+    # default) to disable; only share over a trusted internal network. Prefer
+    # forwarding the end user's bearer token, which needs no token here.
+    internal-token: ${TURING_TENANCY_INTERNAL_TOKEN:}
+    # T336 / §XIV.8.3 — lifecycle close on identity deletion. A daily sweep
+    # suspends (and, in SUSPEND_THEN_DELETE mode, later tears down via the T281
+    # service) any personal tenant whose every member has been deleted/disabled
+    # in Keycloak. Dormant unless enabled AND service-account creds are set; it
+    # never acts when the IdP can't be queried (fail-safe). The creds need a
+    # `realm-management` role that can read users (e.g. `view-users`).
+    deprovision:
+      enabled: ${TURING_TENANCY_DEPROVISION_ENABLED:false}
+      cron: ${TURING_TENANCY_DEPROVISION_CRON:0 25 3 * * *}
+      mode: ${TURING_TENANCY_DEPROVISION_MODE:SUSPEND_ONLY}
+      delete-after-days: ${TURING_TENANCY_DEPROVISION_DELETE_AFTER_DAYS:30}
+      keycloak-client-id: ${TURING_TENANCY_DEPROVISION_KC_CLIENT_ID:}
+      keycloak-client-secret: ${TURING_TENANCY_DEPROVISION_KC_CLIENT_SECRET:}
+    # T366 / §XIV.8.5 — grant ROLE_PLATFORM_ADMIN (cross-tenant console + GLOBAL
+    # infra pool) from a Keycloak realm role. A principal whose token carries this
+    # realm role in `realm_access.roles` becomes a platform admin. Blank disables
+    # realm-role mapping. `admin-implies-platform-admin` is the product decision of
+    # whether the bootstrap admin (`turing.keycloak-admin-id`) gets it implicitly;
+    # default false = platform-admin must always be an explicit, assigned realm role.
+    platform-admin-role: ${TURING_TENANCY_PLATFORM_ADMIN_ROLE:platform-admin}
+    admin-implies-platform-admin: ${TURING_TENANCY_ADMIN_IMPLIES_PLATFORM_ADMIN:false}
   # T245 / §XIII — Turing as an MCP server. The endpoint itself is toggled by
   # spring.ai.mcp.server.enabled (below); this block carries the Turing-specific
   # governance on top of it. loopback-only is the T245 trust boundary: until the
@@ -23,10 +89,35 @@ turing:
     # the token's authorities. Default false keeps the T245 loopback-only dev
     # posture. A remote deployment sets require-auth=true + loopback-only=false.
     require-auth: false
+    # T146 — public consumption surface: when true (with require-auth=true), /mcp
+    # also accepts a Turing API key (TurDevToken) in the `Key` header, so external
+    # MCP clients (Claude Desktop, Cursor, OpenAI Responses) can use a static key.
+    # API-key principals are read-only; write tools still require an OAuth
+    # mcp:write scope. Default false: OAuth is the only accepted credential.
+    api-key-enabled: false
     # T253 — gated write/ingestion tools (index_document, deindex_document,
     # reindex_site). Default false: they are not even registered. When true they
     # appear but still require the mcp:write scope per call. Read-only by default.
     write-enabled: false
+  # E.8 / §IX.9 — observability interop (opt-in, fail-open trace exports). Lock in
+  # via capability, never via format: both are off by default and never disturb a
+  # chat turn when the backend is slow or unreachable.
+  # - spans (T129): emit the chat-pipeline stage timers as OpenTelemetry spans (via
+  #   the micrometer-tracing OTel bridge), exported to any OTLP backend when
+  #   OTEL_EXPORTER_OTLP_ENDPOINT is set. The LLM call already has its own span
+  #   (turing.llm.calls); timer metrics are unaffected either way.
+  # - langsmith (T128): mirror each completed chat turn as a run in a LangSmith
+  #   project (POST {api-url}/runs/batch). Metadata-only by design (model, provider,
+  #   tokens, cost, agent, stage) — no message content, to keep conversation PII out
+  #   of a third-party trace store. A blank api-key is a no-op.
+  observability:
+    spans:
+      enabled: false
+    langsmith:
+      enabled: false
+      api-key: ${LANGSMITH_API_KEY:}
+      api-url: https://api.smith.langchain.com
+      project: turing
   keycloak: false
   keycloak-admin-id:
   authentication:
@@ -59,10 +150,16 @@ turing:
     filesystem:
       path: ./store/assets
     minio:
-      endpoint: http://localhost:9000
-      access-key: admin
-      secret-key: minha_senha_forte
-      bucket: turing-assets
+      endpoint: ${TURING_STORAGE_MINIO_ENDPOINT:http://localhost:9000}
+      # T652 / §XXXVII.14 — externalised. The previous committed value
+      # (`admin` / `minha_senha_forte`) was a real-looking secret in source
+      # (and in git history — rotate the MinIO root credentials and purge the
+      # old value from history as a separate ops step). Only used when
+      # storage.type=MINIO (default is FILESYSTEM). Dev defaults are MinIO's own
+      # well-known placeholders; set the env vars for any real deployment.
+      access-key: ${TURING_STORAGE_MINIO_ACCESS_KEY:minioadmin}
+      secret-key: ${TURING_STORAGE_MINIO_SECRET_KEY:minioadmin}
+      bucket: ${TURING_STORAGE_MINIO_BUCKET:turing-assets}
   code-interpreter:
     # Execution mode is chosen at runtime in Console -> Global Settings ->
     # Code Interpreter (NATIVE host subprocess, the default, or DOCKER). The
@@ -75,6 +172,11 @@ turing:
       cpus: "1.0"               # CPU quota per execution
       pids-limit: 128           # max PIDs (fork-bomb containment)
       probe-timeout-seconds: 8  # timeout for the "Check Docker" availability probe
+      # T239 — opt-in extra isolation (both off by default; the baseline T80
+      # hardening of --cap-drop ALL + no-new-privileges + --read-only +
+      # Docker's built-in seccomp always applies):
+      runtime: ""               # OCI runtime; "runsc" = gVisor (must be installed on the host). Empty = host default (runc).
+      seccomp-profile: ""       # host path to a tighter seccomp profile JSON. Empty = Docker's built-in default profile. Ignored under gVisor.
     native:
       # Per-execution CPU/RAM caps for the NATIVE host-subprocess path (Linux
       # only). DOCKER mode already caps via the container runtime, so these
@@ -109,6 +211,68 @@ turing:
       # the embedding API without saturating typical rate limits. Set to 1 to
       # force sequential indexing (useful for debugging or rate-limited APIs).
       parallel: 4
+    # T791 / §LIV.2 (Block BF) — scheduled structured-feed pull ingester, the
+    # "pull" side of ingestion for a Vectorless (Structured-Data) RAG knowledge
+    # base (TurStructuredFeedIngestService). Off by default; with no sources it is
+    # a no-op even when enabled. Each source GETs a remote JSON / NDJSON feed via
+    # the T739 URL-fetch guard, optionally converges the SN-site field schema from
+    # a field manifest, imports the records, and de-indexes vanished ids.
+    # T793 / §LIV.4 (Block BF) — Vectorless (Structured-Data) RAG copilot
+    # stuff-all mode: when the whole catalog fits the token budget (and doc cap),
+    # the copilot skips NL→DSL retrieval and grounds the LLM on every row (still
+    # cited). Self-gating by size — above either bound it falls back to filtered
+    # retrieval — so it is safe to leave on.
+    copilot:
+      stuff-all-enabled: true
+      stuff-all-token-budget: 40000
+      stuff-all-max-docs: 1000
+    structured-feed:
+      enabled: false
+      # Delay before the first run and fixed delay between runs (ms).
+      initial-delay-ms: 30000
+      interval-ms: 3600000
+      # Safety cap on records mapped per source per run (0 = unlimited).
+      max-records-per-source: 0
+      # sources:
+      #   - id: model-catalog
+      #     site-name: model-catalog
+      #     feed-url: https://openviglet.github.io/model-catalog/catalog.ndjson
+      #     manifest-url: https://openviglet.github.io/model-catalog/query-manifest.json
+      #     id-field: id
+      #     locale: en_US
+      #     # records-field: vendors   # only for a JSON-object envelope feed
+      #     # flatten-nested: true     # T797 — flatten nested objects (pricing.inputPer1M -> pricing_inputPer1M)
+      #     # provision: true          # T796 — auto-create the SN site at startup + set Vectorless mode + first ingest
+      #     # se-instance-id:          # optional; blank defaults to an embedded Lucene SE instance (find-or-create)
+    embedding:
+      # In-process ONNX embedding runtime (TRANSFORMERS_LOCAL + HUGGINGFACE
+      # providers). T656 owns remote artifact acquisition (TurOnnxModelDownloader)
+      # instead of delegating to Spring AI's ResourceCacheService: adds retry/
+      # backoff, an integrity check, a persistent cache, and an actionable error.
+      # The large ONNX file (~90 MB) is a HuggingFace Git-LFS artifact that
+      # 302-redirects to a separate CDN host; a cold cache + a network blip (or an
+      # egress policy that reaches huggingface.co but not the CDN host) is what
+      # left RAG without its embedding model.
+      local:
+        # Persistent cache directory for downloaded .onnx/tokenizer.json files.
+        # Point at a mounted volume so a wiped/ephemeral environment (demo reset)
+        # reuses the warm cache instead of re-downloading ~90 MB on every boot.
+        # Blank falls back to store/turing-onnx-cache — the project-wide store/
+        # dir (H2 db, assets, queue, logs) so the model cache persists next to
+        # them (in Docker under the /app/store volume), not a volatile temp dir.
+        cache-dir:
+        # DJL model/engine cache (DJL backs the in-process ONNX runtime). Blank
+        # sets DJL_CACHE_DIR to store/djl-cache unless the env var / system
+        # property is already pinned. Matches the /app/store/djl-cache dir the
+        # runtime image pre-creates.
+        djl-cache-dir:
+      download:
+        # Bounded retry with exponential backoff on transient network failures.
+        max-attempts: 4
+        # Per-request timeout for the (potentially large) model download.
+        timeout-seconds: 180
+        # Base backoff between attempts; doubles each retry.
+        initial-backoff-millis: 750
   chat:
     session:
       # Cookie name minted by the React SDK to identify a returning visitor.
@@ -117,6 +281,14 @@ turing:
       cookie-name: TUR_SESSION
       # Cookie lifetime in seconds. Default: 30 days (2592000).
       ttl-seconds: 2592000
+    analytics:
+      # T237 — opt-in per-turn node-visit log. When true, the engine appends
+      # the node each turn settles on to the conversation's path on
+      # chat_flow_state and snapshots it onto chat_flow_submission at flow end,
+      # enabling the path-aware funnel's per-node reached / drop-off counts.
+      # Default false: no extra column writes, V1 funnel behaviour unchanged.
+      node-visit-log:
+        enabled: false
     # Note (post-T16): `turing.chat.inverted-harness.enabled` and
     # `turing.chat.judge-retry.enabled` no longer exist. The inverted
     # harness (advance before LLM, single LLM call, no regen) and the
@@ -246,7 +418,11 @@ spring:
       enabled: false
       path: /h2
       settings:
-        web-allow-others: true
+        # T652 / §XXXVII.14 — was true, which (if the console were ever enabled)
+        # would expose a passwordless `sa` remote DB console to other hosts. The
+        # console stays off by default; if enabled for local debugging it now
+        # answers loopback only.
+        web-allow-others: false
   datasource:
     url: jdbc:h2:file:./store/db/turingDB;DATABASE_TO_UPPER=false;CASE_INSENSITIVE_IDENTIFIERS=true
     username: sa
@@ -261,7 +437,7 @@ spring:
       hibernate:
         "[globally_quoted_identifiers]": true
         "[format_sql]": false
-        "[enable_lazy_load_no_trans]": true
+        "[enable_lazy_load_no_trans]": false
         "[generate_statistics]": false
       "[jakarta.persistence.sharedCache.mode]": ALL
     hibernate:
@@ -270,6 +446,12 @@ spring:
   jackson:
     mapper:
       "[DEFAULT_VIEW_INCLUSION]": true
+    deserialization:
+      # Jackson 3 enables FAIL_ON_NULL_FOR_PRIMITIVES by default (Jackson 2 had it
+      # off). Restore the prior behavior so a request body that omits a read-only
+      # primitive DTO component (e.g. TurKnowledgeBaseDto.microthesaurusCount)
+      # deserializes to the primitive default instead of failing with a 400.
+      "[FAIL_ON_NULL_FOR_PRIMITIVES]": false
   thymeleaf:
     mode: HTML
     check-template: true
@@ -291,8 +473,13 @@ spring:
       default-destination: indexing.queue
   servlet:
     multipart:
-      max-file-size: 1024MB
-      max-request-size: 1024MB
+      # T648 / §XXXVII.10 — was 1024MB, which let an anonymous slot-upload feed
+      # ~1 GB into Tika + a vision call. Capped to a sane default; the anonymous
+      # slot endpoints additionally enforce turing.abuse.chat.max-upload-bytes
+      # (10 MB) BEFORE parsing. Raise this for a deployment that imports large
+      # page/skill ZIPs, but keep it bounded.
+      max-file-size: 64MB
+      max-request-size: 64MB
       # Skip eager parsing so the integration proxy ({id}/** catch-all)
       # can forward multipart bodies via getInputStream() to Dumont without
       # the parts having been consumed. Endpoints that use @RequestPart still
@@ -395,7 +582,14 @@ management:
   endpoints:
     web:
       exposure:
-        include: "*"
+        # T649 / §XXXVII.11 — was "*", which exposed /actuator/env + /heapdump
+        # (leaking turing.ai.crypto.key, datasource creds and provider keys) to
+        # any authenticated principal. Only the endpoints that genuinely need
+        # HTTP exposure are published now: health + info + the Prometheus scrape
+        # (all permitAll in TurSecurityConfigProduction). env/heapdump/beans/
+        # mappings/etc. are no longer reachable over HTTP at all — add one back
+        # explicitly (it will fall under authenticated()) only if you need it.
+        include: "health,info,prometheus"
   metrics:
     tags:
       application: turing-es

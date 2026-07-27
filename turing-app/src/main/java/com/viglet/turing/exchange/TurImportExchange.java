@@ -50,6 +50,10 @@ import tools.jackson.databind.json.JsonMapper;
 @Component
 public class TurImportExchange {
 
+    // --- S1192: extracted duplicated literals ---
+    private static final String CLEANUP_FAILED = "Cleanup failed: {}";
+
+
 	private final TurSNSiteImport turSNSiteImport;
 	private final TurSNSiteContentExchangeService contentExchangeService;
 	private final TurSNSiteRepository turSNSiteRepository;
@@ -144,21 +148,13 @@ public class TurImportExchange {
 
 	public ImportResult importFromMultipartFile(MultipartFile multipartFile,
 			boolean includeContent, boolean includeTemplate, String taskId, boolean overwrite) {
-		File extractFolder = this.extractZipFile(multipartFile);
-		if (extractFolder == null) {
+		File rawExtractFolder = this.extractZipFile(multipartFile);
+		if (rawExtractFolder == null) {
 			return ImportResult.error("Failed to extract ZIP file");
 		}
-		File parentExtractFolder = null;
-
-		if (!(new File(extractFolder, EXPORT_FILE).exists())
-				&& (Objects.requireNonNull(extractFolder.listFiles()).length == 1)) {
-			for (File fileOrDirectory : Objects.requireNonNull(extractFolder.listFiles())) {
-				if (fileOrDirectory.isDirectory() && new File(fileOrDirectory, EXPORT_FILE).exists()) {
-					parentExtractFolder = extractFolder;
-					extractFolder = fileOrDirectory;
-				}
-			}
-		}
+		ExtractRoots roots = unwrapSingleSubdirectory(rawExtractFolder);
+		File extractFolder = roots.extractFolder();
+		File parentExtractFolder = roots.parentExtractFolder();
 
 		// export.json is mandatory
 		File exportFile = new File(extractFolder, EXPORT_FILE);
@@ -231,12 +227,27 @@ public class TurImportExchange {
 				agentSummary, List.of());
 	}
 
+	/** The resolved export root and (optional) wrapper directory above it. */
+	private record ExtractRoots(File extractFolder, File parentExtractFolder) {
+	}
+
 	/**
-	 * Reads {@code export.json} for an {@code agents[]} block and delegates to
-	 * {@link TurAIAgentImportService}. Returns {@code null} when the bundle
-	 * carries no agents — the import endpoint can then ignore the agent half
-	 * of the response without inspecting an empty record.
+	 * When the ZIP wrapped everything in a single top-level directory (no
+	 * {@code export.json} at the root), descends into that directory and reports
+	 * the original as the parent (for cleanup). Otherwise returns the root as-is.
 	 */
+	private ExtractRoots unwrapSingleSubdirectory(File extractFolder) {
+		if (!(new File(extractFolder, EXPORT_FILE).exists())
+				&& (Objects.requireNonNull(extractFolder.listFiles()).length == 1)) {
+			for (File fileOrDirectory : Objects.requireNonNull(extractFolder.listFiles())) {
+				if (fileOrDirectory.isDirectory() && new File(fileOrDirectory, EXPORT_FILE).exists()) {
+					return new ExtractRoots(fileOrDirectory, extractFolder);
+				}
+			}
+		}
+		return new ExtractRoots(extractFolder, null);
+	}
+
 	private AgentImportSummary importAgentsFromExportFile(File extractFolder, boolean overwrite) {
 		File exportFile = new File(extractFolder, EXPORT_FILE);
 		if (!exportFile.isFile()) return null;
@@ -314,7 +325,7 @@ public class TurImportExchange {
 		try {
 			cleanupDirectories(extractFolder, null);
 		} catch (IOException e) {
-			log.warn("Cleanup failed: {}", e.getMessage(), e);
+			log.warn(CLEANUP_FAILED, e.getMessage(), e);
 		}
 		Map<String, Object> result = new java.util.HashMap<>();
 		result.put("hasContent", hasContent);
@@ -447,7 +458,7 @@ public class TurImportExchange {
 		try {
 			cleanupDirectories(extractFolder, null);
 		} catch (IOException e) {
-			log.warn("Cleanup failed: {}", e.getMessage(), e);
+			log.warn(CLEANUP_FAILED, e.getMessage(), e);
 		}
 		return found;
 	}
@@ -488,19 +499,7 @@ public class TurImportExchange {
 				Map<String, Map<String, List<Map<String, Object>>>> contentMap =
 						mapper.readValue(fis, new TypeReference<>() {});
 				for (var siteEntry : contentMap.entrySet()) {
-					var siteOpt = turSNSiteRepository.findByNameIgnoreCase(siteEntry.getKey());
-					if (siteOpt.isEmpty()) {
-						log.warn("Content references site '{}' but no matching SN Site found in database.",
-								siteEntry.getKey());
-						continue;
-					}
-					TurSNSite turSNSite = siteOpt.get();
-					String effectiveTaskId = taskId != null ? taskId : turSNSite.getId();
-					int indexed = contentExchangeService.importContent(
-							turSNSite, Map.of(siteEntry.getKey(), siteEntry.getValue()),
-							effectiveTaskId);
-					totalDocuments += indexed;
-					log.info("Imported {} documents for site '{}'", indexed, siteEntry.getKey());
+					totalDocuments += importSiteContent(siteEntry, taskId);
 				}
 			} catch (CallNotPermittedException e) {
 				searchEngineAvailable = false;
@@ -517,6 +516,26 @@ public class TurImportExchange {
 			}
 		}
 		return new ContentImportResult(contentFiles.length, totalDocuments, searchEngineAvailable);
+	}
+
+	/**
+	 * Imports the content for a single site entry. Returns the number of
+	 * documents indexed, or 0 when the referenced site is not found.
+	 */
+	private int importSiteContent(
+			Map.Entry<String, Map<String, List<Map<String, Object>>>> siteEntry, String taskId) {
+		var siteOpt = turSNSiteRepository.findByNameIgnoreCase(siteEntry.getKey());
+		if (siteOpt.isEmpty()) {
+			log.warn("Content references site '{}' but no matching SN Site found in database.",
+					siteEntry.getKey());
+			return 0;
+		}
+		TurSNSite turSNSite = siteOpt.get();
+		String effectiveTaskId = taskId != null ? taskId : turSNSite.getId();
+		int indexed = contentExchangeService.importContent(
+				turSNSite, Map.of(siteEntry.getKey(), siteEntry.getValue()), effectiveTaskId);
+		log.info("Imported {} documents for site '{}'", indexed, siteEntry.getKey());
+		return indexed;
 	}
 
 	/**
@@ -558,7 +577,7 @@ public class TurImportExchange {
 		try {
 			cleanupDirectories(extractFolder, parentExtractFolder);
 		} catch (IOException e) {
-			log.warn("Cleanup failed: {}", e.getMessage(), e);
+			log.warn(CLEANUP_FAILED, e.getMessage(), e);
 		}
 	}
 
@@ -621,7 +640,7 @@ public class TurImportExchange {
 			try {
 				cleanupDirectories(extractFolder, parentExtractFolder);
 			} catch (IOException e) {
-				log.warn("Cleanup failed: {}", e.getMessage(), e);
+				log.warn(CLEANUP_FAILED, e.getMessage(), e);
 			}
 		}
 	}

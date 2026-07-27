@@ -1,10 +1,10 @@
 package com.viglet.turing.genai.tool;
 
+import com.viglet.turing.domain.sn.TurSNSiteFieldExtDomain;
+import com.viglet.turing.domain.sn.TurSNSiteFieldExtRepositoryPort;
 import com.viglet.turing.persistence.model.sn.TurSNSite;
-import com.viglet.turing.persistence.model.sn.field.TurSNSiteFieldExt;
 import com.viglet.turing.persistence.model.sn.locale.TurSNSiteLocale;
 import com.viglet.turing.persistence.repository.sn.TurSNSiteRepository;
-import com.viglet.turing.persistence.repository.sn.field.TurSNSiteFieldExtRepository;
 import com.viglet.turing.persistence.repository.sn.locale.TurSNSiteLocaleRepository;
 import com.viglet.turing.plugins.se.TurSearchEnginePluginFactory;
 import com.viglet.turing.sn.dsl.TurDslSearchResponse;
@@ -44,21 +44,24 @@ public class TurDslToolService {
 
     private final TurSNSiteRepository turSNSiteRepository;
     private final TurSNSiteLocaleRepository turSNSiteLocaleRepository;
-    private final TurSNSiteFieldExtRepository turSNSiteFieldExtRepository;
+    private final TurSNSiteFieldExtRepositoryPort turSNSiteFieldExtRepositoryPort;
     private final TurDslSearchService turDslSearchService;
     private final TurSearchEnginePluginFactory pluginFactory;
+    private final TurSNSiteConfigCache configCache;
     private final ObjectMapper objectMapper = JsonMapper.builder().build();
 
     public TurDslToolService(TurSNSiteRepository turSNSiteRepository,
                               TurSNSiteLocaleRepository turSNSiteLocaleRepository,
-                              TurSNSiteFieldExtRepository turSNSiteFieldExtRepository,
+                              TurSNSiteFieldExtRepositoryPort turSNSiteFieldExtRepositoryPort,
                               TurDslSearchService turDslSearchService,
-                              TurSearchEnginePluginFactory pluginFactory) {
+                              TurSearchEnginePluginFactory pluginFactory,
+                              TurSNSiteConfigCache configCache) {
         this.turSNSiteRepository = turSNSiteRepository;
         this.turSNSiteLocaleRepository = turSNSiteLocaleRepository;
-        this.turSNSiteFieldExtRepository = turSNSiteFieldExtRepository;
+        this.turSNSiteFieldExtRepositoryPort = turSNSiteFieldExtRepositoryPort;
         this.turDslSearchService = turDslSearchService;
         this.pluginFactory = pluginFactory;
+        this.configCache = configCache;
     }
 
     // ==================== Tool 1: List Indices ====================
@@ -112,36 +115,69 @@ public class TurDslToolService {
     public String getMappings(String index) {
         log.info("[DSL Tool] dsl_get_mappings called with index={}", index);
 
+        if (index == null || index.isBlank()) {
+            return "Index not found: " + index;
+        }
+        // T487 — memoize the immutable field-config read-model by lowercased
+        // site name; on a hit the site + field queries inside loadFieldConfig
+        // are skipped. Evicted on any SN write by TurSNSiteSnapshotEvictionListener.
+        TurSNSiteFieldConfigModel model = configCache.fieldConfig(index.toLowerCase(),
+                () -> loadFieldConfig(index));
+        if (model == null) {
+            return "Index not found: " + index;
+        }
+
+        Map<String, Object> properties = new LinkedHashMap<>();
+        for (TurSNSiteFieldConfigModel.FieldInfo field : model.fields()) {
+            properties.put(field.name(), buildFieldMapping(field));
+        }
+        Map<String, Object> mappings = new LinkedHashMap<>();
+        mappings.put(model.siteName(), Map.of("mappings", Map.of("properties", properties)));
+
+        try {
+            return objectMapper.writeValueAsString(mappings);
+        } catch (Exception e) {
+            return "Found %d fields for index '%s'.".formatted(model.fields().size(), index);
+        }
+    }
+
+    /**
+     * Loads the enabled-field configuration for {@code index} into the immutable
+     * {@link TurSNSiteFieldConfigModel} read-model, or {@code null} when the site
+     * does not exist. Invoked only on a {@link TurSNSiteConfigCache} miss.
+     */
+    private TurSNSiteFieldConfigModel loadFieldConfig(String index) {
         return turSNSiteRepository.findByNameIgnoreCase(index)
                 .map(site -> {
-                    List<TurSNSiteFieldExt> fields = turSNSiteFieldExtRepository
-                            .findByTurSNSiteAndEnabled(site, 1);
-
-                    Map<String, Object> mappings = new LinkedHashMap<>();
-                    Map<String, Object> properties = new LinkedHashMap<>();
-
-                    for (TurSNSiteFieldExt field : fields) {
-                        Map<String, Object> fieldMapping = new LinkedHashMap<>();
-                        fieldMapping.put("type", field.getType() != null
-                                ? field.getType().toString().toLowerCase() : "text");
-                        if (field.getFacet() == 1) fieldMapping.put("facet", true);
-                        if (field.getMultiValued() == 1) fieldMapping.put("multi_valued", true);
-                        if (field.getDescription() != null)
-                            fieldMapping.put("description", field.getDescription());
-                        properties.put(field.getName(), fieldMapping);
-                    }
-
-                    mappings.put(site.getName(), Map.of("mappings",
-                            Map.of("properties", properties)));
-
-                    try {
-                        return objectMapper.writeValueAsString(mappings);
-                    } catch (Exception e) {
-                        return "Found %d fields for index '%s'.".formatted(
-                                fields.size(), index);
-                    }
+                    // Enabled fields read through the domain port — the derived
+                    // FieldInfo list feeds an immutable cached read-model
+                    // (TurSNSiteConfigCache), so it must not carry JPA entities
+                    // (T542 boundary: cache read-models go through records).
+                    List<TurSNSiteFieldExtDomain> fields = turSNSiteFieldExtRepositoryPort
+                            .findBySnSiteIdAndEnabled(site.getId(), 1);
+                    List<TurSNSiteFieldConfigModel.FieldInfo> infos = fields.stream()
+                            .map(f -> new TurSNSiteFieldConfigModel.FieldInfo(
+                                    f.name(),
+                                    f.type() != null ? f.type().toString().toLowerCase() : "text",
+                                    f.isFacet(),
+                                    f.isMultiValued(),
+                                    f.description()))
+                            .toList();
+                    return new TurSNSiteFieldConfigModel(site.getName(), infos);
                 })
-                .orElse("Index not found: " + index);
+                .orElse(null);
+    }
+
+    /** Builds the mapping entry (type + optional facet/multi_valued/description) for one field. */
+    private Map<String, Object> buildFieldMapping(TurSNSiteFieldConfigModel.FieldInfo field) {
+        Map<String, Object> fieldMapping = new LinkedHashMap<>();
+        fieldMapping.put("type", field.type() != null ? field.type() : "text");
+        if (field.facet()) fieldMapping.put("facet", true);
+        if (field.multiValued()) fieldMapping.put("multi_valued", true);
+        if (field.description() != null) {
+            fieldMapping.put("description", field.description());
+        }
+        return fieldMapping;
     }
 
     // ==================== Tool 3: DSL Search ====================
@@ -171,58 +207,100 @@ public class TurDslToolService {
                         index, searchLocale);
             }
 
-            TurDslSearchResponse response = responseOpt.get();
-            StringBuilder sb = new StringBuilder();
-            long total = response.hits() != null && response.hits().total() != null
-                    ? response.hits().total().value() : 0;
-            int shown = response.hits() != null && response.hits().hits() != null
-                    ? response.hits().hits().size() : 0;
-
-            sb.append("Found %d results (showing %d). Took %dms.\n".formatted(
-                    total, shown, response.took()));
-
-            // Hits
-            if (response.hits() != null && response.hits().hits() != null) {
-                try {
-                    sb.append(objectMapper.writeValueAsString(
-                            response.hits().hits().stream()
-                                    .map(hit -> {
-                                        Map<String, Object> doc = new LinkedHashMap<>();
-                                        doc.put("_id", hit.id());
-                                        doc.put("_score", hit.score());
-                                        if (hit.source() != null) doc.putAll(hit.source());
-                                        return doc;
-                                    }).toList()));
-                } catch (Exception e) {
-                    sb.append("[Error serializing hits]");
-                }
-            }
-
-            // Aggregations
-            if (response.aggregations() != null && !response.aggregations().isEmpty()) {
-                sb.append("\n\nAggregations:\n");
-                try {
-                    sb.append(objectMapper.writeValueAsString(response.aggregations()));
-                } catch (Exception e) {
-                    sb.append("[Error serializing aggregations]");
-                }
-            }
-
-            // Suggest
-            if (response.suggest() != null && !response.suggest().isEmpty()) {
-                sb.append("\n\nSuggestions:\n");
-                try {
-                    sb.append(objectMapper.writeValueAsString(response.suggest()));
-                } catch (Exception e) {
-                    sb.append("[Error serializing suggestions]");
-                }
-            }
-
-            return sb.toString();
+            return formatSearchResponse(responseOpt.get());
         } catch (Exception e) {
             log.error("[DSL Tool] dsl_search failed", e);
             return "Error executing DSL search: " + e.getMessage()
                     + "\nEnsure the query_body is valid Elasticsearch Query DSL JSON.";
+        }
+    }
+
+    /** Renders a search response into the human-readable tool reply (hits + aggs + suggest). */
+    private String formatSearchResponse(TurDslSearchResponse response) {
+        StringBuilder sb = new StringBuilder();
+        long total = response.hits() != null && response.hits().total() != null
+                ? response.hits().total().value() : 0;
+        int shown = response.hits() != null && response.hits().hits() != null
+                ? response.hits().hits().size() : 0;
+
+        sb.append("Found %d results (showing %d). Took %dms.\n".formatted(
+                total, shown, response.took()));
+
+        // Hits
+        if (response.hits() != null && response.hits().hits() != null) {
+            sb.append(toJsonOrError(
+                    response.hits().hits().stream()
+                            .map(hit -> {
+                                Map<String, Object> doc = new LinkedHashMap<>();
+                                doc.put("_id", hit.id());
+                                doc.put("_score", hit.score());
+                                if (hit.source() != null) doc.putAll(hit.source());
+                                return doc;
+                            }).toList(),
+                    "[Error serializing hits]"));
+        }
+
+        // Aggregations
+        if (response.aggregations() != null && !response.aggregations().isEmpty()) {
+            sb.append("\n\nAggregations:\n");
+            sb.append(toJsonOrError(response.aggregations(), "[Error serializing aggregations]"));
+        }
+
+        // Suggest
+        if (response.suggest() != null && !response.suggest().isEmpty()) {
+            sb.append("\n\nSuggestions:\n");
+            sb.append(toJsonOrError(response.suggest(), "[Error serializing suggestions]"));
+        }
+
+        return sb.toString();
+    }
+
+    /** Builds the cat-shards style row for one site+locale (doc count + store size via the SE plugin). */
+    private Map<String, Object> buildShardRow(TurSNSite site, TurSNSiteLocale locale) {
+        var plugin = pluginFactory.getPluginForSite(site);
+        var seInstance = site.getTurSEInstance();
+        String coreName = locale.getCore();
+
+        // Get document count via plugin
+        long docCount;
+        try {
+            docCount = plugin.getDocumentTotal(locale);
+        } catch (Exception e) {
+            docCount = -1;
+        }
+
+        // List indexes/cores for store info
+        String storeSize = "N/A";
+        try {
+            for (var info : plugin.listIndexes(seInstance)) {
+                if (coreName.equalsIgnoreCase(info.name())) {
+                    storeSize = info.numDocs() + " docs";
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            // ignore
+        }
+
+        Map<String, Object> shard = new LinkedHashMap<>();
+        shard.put("index", site.getName());
+        shard.put("shard", coreName);
+        shard.put("prirep", "p");
+        shard.put("state", "STARTED");
+        shard.put("docs", docCount >= 0 ? docCount : "unknown");
+        shard.put("store", storeSize);
+        shard.put("engine", plugin.getPluginType());
+        shard.put("node", seInstance != null ? seInstance.getEndpointUrl() : "embedded");
+        shard.put("locale", locale.getLanguage().toString());
+        return shard;
+    }
+
+    /** Serializes {@code value} to JSON, or returns {@code errorPlaceholder} on failure. */
+    private String toJsonOrError(Object value, String errorPlaceholder) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (Exception e) {
+            return errorPlaceholder;
         }
     }
 
@@ -233,8 +311,7 @@ public class TurDslToolService {
         log.info("[DSL Tool] dsl_get_document called: index={}, locale={}, id={}",
                 index, locale, documentId);
 
-        String queryBody = """
-                {"query":{"ids":{"values":["%s"]}},"size":1}""".formatted(documentId);
+        String queryBody = "{\"query\":{\"ids\":{\"values\":[\"%s\"]}},\"size\":1}".formatted(documentId);
 
         try {
             TurDslQueryRequest request = objectMapper.readValue(queryBody,
@@ -293,36 +370,8 @@ public class TurDslToolService {
 
             if (responseOpt.isPresent()) {
                 TurDslSearchResponse response = responseOpt.get();
-
-                // Search results as suggestions
-                if (response.hits() != null && response.hits().hits() != null
-                        && !response.hits().hits().isEmpty()) {
-                    sb.append("Search results for '%s':\n".formatted(text));
-                    for (var hit : response.hits().hits()) {
-                        if (hit.source() != null) {
-                            sb.append("  - ");
-                            if (hit.source().containsKey("title"))
-                                sb.append(hit.source().get("title"));
-                            sb.append(" (id: ").append(hit.id()).append(")\n");
-                        }
-                    }
-                }
-
-                // Suggest results
-                if (response.suggest() != null && !response.suggest().isEmpty()) {
-                    sb.append("\nSuggestions:\n");
-                    for (var entry : response.suggest().entrySet()) {
-                        for (var suggestion : entry.getValue()) {
-                            if (suggestion.options() != null) {
-                                for (var option : suggestion.options()) {
-                                    sb.append("  - ").append(option.text())
-                                            .append(" (score: ").append(option.score())
-                                            .append(")\n");
-                                }
-                            }
-                        }
-                    }
-                }
+                appendSearchResults(sb, response, text);
+                appendSuggestions(sb, response);
             }
 
             if (sb.isEmpty()) {
@@ -333,6 +382,52 @@ public class TurDslToolService {
         } catch (Exception e) {
             log.error("[DSL Tool] dsl_suggest failed", e);
             return "Error getting suggestions: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Appends the hit list (title + id per hit) of a suggest response, if any.
+     *
+     * @since 2026.3.1
+     */
+    private static void appendSearchResults(StringBuilder sb, TurDslSearchResponse response, String text) {
+        if (response.hits() == null || response.hits().hits() == null
+                || response.hits().hits().isEmpty()) {
+            return;
+        }
+        sb.append("Search results for '%s':\n".formatted(text));
+        for (var hit : response.hits().hits()) {
+            if (hit.source() != null) {
+                sb.append("  - ");
+                if (hit.source().containsKey("title")) {
+                    sb.append(hit.source().get("title"));
+                }
+                sb.append(" (id: ").append(hit.id()).append(")\n");
+            }
+        }
+    }
+
+    /**
+     * Appends the term-suggester options (text + score) of a suggest response,
+     * if any.
+     *
+     * @since 2026.3.1
+     */
+    private static void appendSuggestions(StringBuilder sb, TurDslSearchResponse response) {
+        if (response.suggest() == null || response.suggest().isEmpty()) {
+            return;
+        }
+        sb.append("\nSuggestions:\n");
+        for (var entry : response.suggest().entrySet()) {
+            for (var suggestion : entry.getValue()) {
+                if (suggestion.options() != null) {
+                    for (var option : suggestion.options()) {
+                        sb.append("  - ").append(option.text())
+                                .append(" (score: ").append(option.score())
+                                .append(")\n");
+                    }
+                }
+            }
         }
     }
 
@@ -356,47 +451,8 @@ public class TurDslToolService {
 
         List<Map<String, Object>> shards = new ArrayList<>();
         for (TurSNSite site : sites) {
-            var plugin = pluginFactory.getPluginForSite(site);
-            String engineType = plugin.getPluginType();
-            var seInstance = site.getTurSEInstance();
-
-            List<TurSNSiteLocale> locales = turSNSiteLocaleRepository.findByTurSNSite(site);
-            for (TurSNSiteLocale locale : locales) {
-                String coreName = locale.getCore();
-
-                // Get document count via plugin
-                long docCount;
-                try {
-                    docCount = plugin.getDocumentTotal(locale);
-                } catch (Exception e) {
-                    docCount = -1;
-                }
-
-                // List indexes/cores for store info
-                String storeSize = "N/A";
-                try {
-                    var coreInfos = plugin.listIndexes(seInstance);
-                    for (var info : coreInfos) {
-                        if (coreName.equalsIgnoreCase(info.name())) {
-                            storeSize = String.valueOf(info.numDocs()) + " docs";
-                            break;
-                        }
-                    }
-                } catch (Exception e) {
-                    // ignore
-                }
-
-                Map<String, Object> shard = new LinkedHashMap<>();
-                shard.put("index", site.getName());
-                shard.put("shard", coreName);
-                shard.put("prirep", "p");
-                shard.put("state", "STARTED");
-                shard.put("docs", docCount >= 0 ? docCount : "unknown");
-                shard.put("store", storeSize);
-                shard.put("engine", engineType);
-                shard.put("node", seInstance != null ? seInstance.getEndpointUrl() : "embedded");
-                shard.put("locale", locale.getLanguage().toString());
-                shards.add(shard);
+            for (TurSNSiteLocale locale : turSNSiteLocaleRepository.findByTurSNSite(site)) {
+                shards.add(buildShardRow(site, locale));
             }
         }
 

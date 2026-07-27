@@ -11,6 +11,10 @@ import org.springframework.web.bind.annotation.RestController;
 import com.viglet.turing.email.TurEmailService;
 import com.viglet.turing.genai.tool.TurCodeInterpreterToolService;
 import com.viglet.turing.genai.tool.TurCodeInterpreterToolService.TurDockerStatus;
+import com.viglet.turing.genai.transcription.TurAudioChunker;
+import com.viglet.turing.genai.transcription.TurAudioChunker.TurFfmpegStatus;
+import com.viglet.turing.genai.urlfetch.TurUrlFetchService;
+import com.viglet.turing.genai.urlfetch.TurUrlFetchService.TurBrowserlessStatus;
 import com.viglet.turing.system.TurGlobalSettingsService;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -25,13 +29,19 @@ public class TurGlobalSettingsAPI {
     private final TurGlobalSettingsService turGlobalSettingsService;
     private final TurEmailService turEmailService;
     private final TurCodeInterpreterToolService turCodeInterpreterToolService;
+    private final TurAudioChunker turAudioChunker;
+    private final TurUrlFetchService turUrlFetchService;
 
     public TurGlobalSettingsAPI(TurGlobalSettingsService turGlobalSettingsService,
             TurEmailService turEmailService,
-            TurCodeInterpreterToolService turCodeInterpreterToolService) {
+            TurCodeInterpreterToolService turCodeInterpreterToolService,
+            TurAudioChunker turAudioChunker,
+            TurUrlFetchService turUrlFetchService) {
         this.turGlobalSettingsService = turGlobalSettingsService;
         this.turEmailService = turEmailService;
         this.turCodeInterpreterToolService = turCodeInterpreterToolService;
+        this.turAudioChunker = turAudioChunker;
+        this.turUrlFetchService = turUrlFetchService;
     }
 
     @Operation(summary = "Get global settings")
@@ -45,6 +55,16 @@ public class TurGlobalSettingsAPI {
                 .codeInterpreterDockerImage(turGlobalSettingsService.getCodeInterpreterDockerImage())
                 .codeInterpreterSkillImage(turGlobalSettingsService.getCodeInterpreterSkillImage())
                 .defaultLlmId(turGlobalSettingsService.getDefaultLlmId())
+                .modelLaneFastId(turGlobalSettingsService
+                        .getModelLaneInstanceId(com.viglet.turing.system.lane.TurModelLane.FAST))
+                .modelLaneReasoningId(turGlobalSettingsService
+                        .getModelLaneInstanceId(com.viglet.turing.system.lane.TurModelLane.REASONING))
+                .modelLaneCheapId(turGlobalSettingsService
+                        .getModelLaneInstanceId(com.viglet.turing.system.lane.TurModelLane.CHEAP))
+                .llmFallbackChainIds(turGlobalSettingsService.getLlmFallbackChainIds())
+                .llmFallbackMode(turGlobalSettingsService.getLlmFallbackMode())
+                .secondOpinionEnabled(turGlobalSettingsService.isSecondOpinionEnabled())
+                .secondOpinionLlmId(turGlobalSettingsService.getSecondOpinionLlmId())
                 .llmCacheEnabled(turGlobalSettingsService.isLlmCacheEnabled())
                 .llmCacheTtlMs(turGlobalSettingsService.getLlmCacheTtlMs())
                 .llmCacheRegenerate(turGlobalSettingsService.isLlmCacheRegenerate())
@@ -63,9 +83,25 @@ public class TurGlobalSettingsAPI {
                 .ragSnRerankStrategy(turGlobalSettingsService.getRagSnRerankStrategy())
                 .ragSnRerankEndpoint(turGlobalSettingsService.getRagSnRerankEndpoint())
                 .ragSnRerankModel(turGlobalSettingsService.getRagSnRerankModel())
+                .ragSnRerankRegion(turGlobalSettingsService.getRagSnRerankRegion())
+                .ragSnRerankVertexProject(turGlobalSettingsService.getRagSnRerankVertexProject())
+                .ragSnRerankVertexLocation(turGlobalSettingsService.getRagSnRerankVertexLocation())
                 // write-only secret: never echo the key, only its set/not-set status
                 .ragSnRerankApiKey("")
                 .ragSnRerankApiKeySet(turGlobalSettingsService.isRagSnRerankApiKeySet())
+                .ragSnRerankCacheEnabled(turGlobalSettingsService.isRagSnRerankCacheEnabled())
+                .transcriptionStrategy(turGlobalSettingsService.getTranscriptionStrategy())
+                .transcriptionEndpoint(turGlobalSettingsService.getTranscriptionEndpoint())
+                .transcriptionModel(turGlobalSettingsService.getTranscriptionModel())
+                .transcriptionMaxUploadBytes(turGlobalSettingsService.getTranscriptionMaxUploadBytes())
+                // write-only secret: never echo the key, only its set/not-set status
+                .transcriptionApiKey("")
+                .transcriptionApiKeySet(turGlobalSettingsService.isTranscriptionApiKeySet())
+                .urlFetchMode(turGlobalSettingsService.getUrlFetchMode())
+                .urlFetchBrowserlessUrl(turGlobalSettingsService.getUrlFetchBrowserlessUrl())
+                // write-only secret: never echo the token, only its set/not-set status
+                .urlFetchBrowserlessToken("")
+                .urlFetchBrowserlessTokenSet(turGlobalSettingsService.isUrlFetchBrowserlessTokenSet())
                 .build();
     }
 
@@ -87,6 +123,23 @@ public class TurGlobalSettingsAPI {
                         .updateCodeInterpreterSkillImage(globalSettings.getCodeInterpreterSkillImage()))
                 .defaultLlmId(turGlobalSettingsService
                         .updateDefaultLlmId(globalSettings.getDefaultLlmId()))
+                .modelLaneFastId(turGlobalSettingsService.updateModelLaneInstanceId(
+                        com.viglet.turing.system.lane.TurModelLane.FAST,
+                        globalSettings.getModelLaneFastId()))
+                .modelLaneReasoningId(turGlobalSettingsService.updateModelLaneInstanceId(
+                        com.viglet.turing.system.lane.TurModelLane.REASONING,
+                        globalSettings.getModelLaneReasoningId()))
+                .modelLaneCheapId(turGlobalSettingsService.updateModelLaneInstanceId(
+                        com.viglet.turing.system.lane.TurModelLane.CHEAP,
+                        globalSettings.getModelLaneCheapId()))
+                .llmFallbackChainIds(turGlobalSettingsService
+                        .updateLlmFallbackChainIds(globalSettings.getLlmFallbackChainIds()))
+                .llmFallbackMode(turGlobalSettingsService
+                        .updateLlmFallbackMode(globalSettings.getLlmFallbackMode()))
+                .secondOpinionEnabled(turGlobalSettingsService
+                        .updateSecondOpinionEnabled(globalSettings.isSecondOpinionEnabled()))
+                .secondOpinionLlmId(turGlobalSettingsService
+                        .updateSecondOpinionLlmId(globalSettings.getSecondOpinionLlmId()))
                 .llmCacheEnabled(turGlobalSettingsService
                         .updateLlmCacheEnabled(globalSettings.isLlmCacheEnabled()))
                 .llmCacheTtlMs(turGlobalSettingsService
@@ -123,11 +176,52 @@ public class TurGlobalSettingsAPI {
                         .updateRagSnRerankEndpoint(globalSettings.getRagSnRerankEndpoint()))
                 .ragSnRerankModel(turGlobalSettingsService
                         .updateRagSnRerankModel(globalSettings.getRagSnRerankModel()))
+                .ragSnRerankRegion(turGlobalSettingsService
+                        .updateRagSnRerankRegion(globalSettings.getRagSnRerankRegion()))
+                .ragSnRerankVertexProject(turGlobalSettingsService
+                        .updateRagSnRerankVertexProject(globalSettings.getRagSnRerankVertexProject()))
+                .ragSnRerankVertexLocation(turGlobalSettingsService
+                        .updateRagSnRerankVertexLocation(globalSettings.getRagSnRerankVertexLocation()))
                 // Write-only secret — persisted only when a non-blank value
                 // arrives, blank leaves the stored key untouched, never echoed
                 .ragSnRerankApiKey("")
                 .ragSnRerankApiKeySet(updateRerankApiKeyIfPresent(globalSettings.getRagSnRerankApiKey()))
+                .ragSnRerankCacheEnabled(turGlobalSettingsService
+                        .updateRagSnRerankCacheEnabled(globalSettings.isRagSnRerankCacheEnabled()))
+                .transcriptionStrategy(turGlobalSettingsService
+                        .updateTranscriptionStrategy(globalSettings.getTranscriptionStrategy()))
+                .transcriptionEndpoint(turGlobalSettingsService
+                        .updateTranscriptionEndpoint(globalSettings.getTranscriptionEndpoint()))
+                .transcriptionModel(turGlobalSettingsService
+                        .updateTranscriptionModel(globalSettings.getTranscriptionModel()))
+                .transcriptionMaxUploadBytes(turGlobalSettingsService
+                        .updateTranscriptionMaxUploadBytes(globalSettings.getTranscriptionMaxUploadBytes()))
+                // Write-only secret — persisted only when a non-blank value
+                // arrives, blank leaves the stored key untouched, never echoed
+                .transcriptionApiKey("")
+                .transcriptionApiKeySet(updateTranscriptionApiKeyIfPresent(globalSettings.getTranscriptionApiKey()))
+                .urlFetchMode(turGlobalSettingsService
+                        .updateUrlFetchMode(globalSettings.getUrlFetchMode()))
+                .urlFetchBrowserlessUrl(turGlobalSettingsService
+                        .updateUrlFetchBrowserlessUrl(globalSettings.getUrlFetchBrowserlessUrl()))
+                // Write-only secret — persisted only when a non-blank value
+                // arrives, blank leaves the stored token untouched, never echoed
+                .urlFetchBrowserlessToken("")
+                .urlFetchBrowserlessTokenSet(
+                        updateUrlFetchTokenIfPresent(globalSettings.getUrlFetchBrowserlessToken()))
                 .build();
+    }
+
+    /**
+     * T739 — persists the browserless token only when the client sent a non-blank
+     * value (write-only field); a blank submit preserves the existing token.
+     * Returns the resulting configured status.
+     */
+    private boolean updateUrlFetchTokenIfPresent(String token) {
+        if (token == null || token.isBlank()) {
+            return turGlobalSettingsService.isUrlFetchBrowserlessTokenSet();
+        }
+        return turGlobalSettingsService.updateUrlFetchBrowserlessToken(token);
     }
 
     /**
@@ -140,6 +234,18 @@ public class TurGlobalSettingsAPI {
             return turGlobalSettingsService.isRagSnRerankApiKeySet();
         }
         return turGlobalSettingsService.updateRagSnRerankApiKey(apiKey);
+    }
+
+    /**
+     * T687 — persists the transcription API key only when the client sent a
+     * non-blank value (write-only field); a blank submit preserves the existing
+     * key. Returns the resulting configured status.
+     */
+    private boolean updateTranscriptionApiKeyIfPresent(String apiKey) {
+        if (apiKey == null || apiKey.isBlank()) {
+            return turGlobalSettingsService.isTranscriptionApiKeySet();
+        }
+        return turGlobalSettingsService.updateTranscriptionApiKey(apiKey);
     }
 
     /**
@@ -160,7 +266,10 @@ public class TurGlobalSettingsAPI {
     @PostMapping("/code-interpreter/url-signing-secret/regenerate")
     public TurUrlSigningSecretRotation regenerateUrlSigningSecret() {
         String preview = turGlobalSettingsService.regenerateCodeInterpreterUrlSigningSecret();
-        log.info("[GlobalSettings] URL-signing secret rotated by admin — first 8 chars: {}…", preview);
+        // T652 / §XXXVII.14 — do NOT log any of the secret material (was logging
+        // its first 8 chars). The preview is returned in the response for the
+        // admin UI to confirm the rotation, but never written to the log.
+        log.info("[GlobalSettings] URL-signing secret rotated by admin");
         return new TurUrlSigningSecretRotation(true, preview);
     }
 
@@ -183,6 +292,32 @@ public class TurGlobalSettingsAPI {
     @GetMapping("/code-interpreter/docker/status")
     public TurDockerStatus getDockerStatus() {
         return turCodeInterpreterToolService.checkDocker();
+    }
+
+    /**
+     * T688 — probes whether the {@code ffmpeg} toolchain is reachable from the
+     * running server. Chunking audio above a backend's per-request limit requires
+     * ffmpeg; small clips do not. Lets the admin validate the host before relying
+     * on large-file transcription. Never sends anything sensitive — only an
+     * availability flag, the ffmpeg version banner, and an error string when
+     * unavailable.
+     */
+    @Operation(summary = "Check whether ffmpeg is available for large-audio transcription chunking")
+    @GetMapping("/transcription/ffmpeg/status")
+    public TurFfmpegStatus getFfmpegStatus() {
+        return turAudioChunker.checkFfmpeg();
+    }
+
+    /**
+     * T739 / §XLVIII — probes whether the configured {@code browserless} sidecar
+     * is reachable, so the admin can validate it before switching the URL-fetch
+     * mode to {@code HEADLESS}/{@code AUTO}. Never sends anything sensitive — only
+     * an availability flag, the reported browser version, and an error string.
+     */
+    @Operation(summary = "Check whether the browserless sidecar is reachable for headless URL fetching")
+    @GetMapping("/url-fetch/browserless/status")
+    public TurBrowserlessStatus getBrowserlessStatus() {
+        return turUrlFetchService.checkBrowserless();
     }
 
     @Operation(summary = "Send a test email to validate email configuration")

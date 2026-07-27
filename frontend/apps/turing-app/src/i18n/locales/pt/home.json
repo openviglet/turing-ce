@@ -24,6 +24,10 @@
       }
     },
     "features": {
+      "evalStudio": {
+        "title": "Eval Studio",
+        "description": "Datasets e pilhas de avaliadores da plataforma de avaliação, compartilháveis entre agentes."
+      },
       "languageModel": {
         "title": "Modelo de Linguagem",
         "description": "Configure provedores de LLM como OpenAI, Ollama, Anthropic e Gemini para chat e geração."
@@ -64,9 +68,17 @@
         "title": "Intenção",
         "description": "Defina categorias de prompts e ações exibidas como sugestões rápidas no chat."
       },
+      "aiAnalytics": {
+        "title": "Análise e Custos de IA",
+        "description": "Acompanhe uso de tokens, custos, qualidade das conversas e conversas pausadas em um só lugar."
+      },
       "tokenUsage": {
         "title": "Uso de Tokens",
         "description": "Monitore o consumo de tokens em todas as instâncias e modelos de LLM."
+      },
+      "costGovernance": {
+        "title": "Governança de Custos",
+        "description": "Painel de gastos de IA em tempo real com custo por agente / modelo / etapa, tabela de preços e orçamentos por agente."
       },
       "chatAnalytics": {
         "title": "Análise de Chat",

@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.StringJoiner;
+import java.util.concurrent.atomic.AtomicReference;
 
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -74,7 +75,7 @@ public class TurChatFlowRouterDecisionLog {
     /** Max decisions retained in the global recency ring. */
     static final int MAX_GLOBAL = 2000;
 
-    private static volatile TurChatFlowRouterDecisionLog instance;
+    private static final AtomicReference<TurChatFlowRouterDecisionLog> instance = new AtomicReference<>();
 
     /**
      * Access-order LRU of conversationId → recent decisions. Bounded by
@@ -96,14 +97,12 @@ public class TurChatFlowRouterDecisionLog {
 
     @PostConstruct
     void register() {
-        instance = this;
+        instance.set(this);
     }
 
     @PreDestroy
     void unregister() {
-        if (instance == this) {
-            instance = null;
-        }
+        instance.compareAndSet(this, null);
     }
 
     /**
@@ -112,7 +111,7 @@ public class TurChatFlowRouterDecisionLog {
      * null-check (or use {@link #recordSafely(TurChatFlowRouterDecision)}).
      */
     public static TurChatFlowRouterDecisionLog getInstance() {
-        return instance;
+        return instance.get();
     }
 
     /**
@@ -122,7 +121,7 @@ public class TurChatFlowRouterDecisionLog {
      * layer can never break a chat turn.
      */
     public static void recordSafely(TurChatFlowRouterDecision decision) {
-        TurChatFlowRouterDecisionLog log = instance;
+        TurChatFlowRouterDecisionLog log = instance.get();
         if (log == null || decision == null) {
             return;
         }
@@ -137,6 +136,10 @@ public class TurChatFlowRouterDecisionLog {
     /**
      * Emits the structured log line and retains the decision in both rings.
      */
+    // S6213: record reads as the natural domain verb here and is a valid identifier
+    // (only a contextual keyword). Renaming this public method would ripple through
+    // production callers and many tests for a naming nit, so it is kept as is.
+    @SuppressWarnings("java:S6213")
     public void record(TurChatFlowRouterDecision decision) {
         if (decision == null) {
             return;

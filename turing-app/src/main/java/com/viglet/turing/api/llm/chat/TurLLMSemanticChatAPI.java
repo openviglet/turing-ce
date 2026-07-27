@@ -11,7 +11,6 @@ import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.tool.DefaultToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.method.MethodToolCallbackProvider;
 import org.springframework.http.MediaType;
@@ -25,12 +24,15 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.viglet.turing.domain.llm.TurLLMInstanceDomain;
 import com.viglet.turing.domain.llm.TurLLMInstanceRepositoryPort;
+import com.viglet.turing.genai.TurChatToolOptions;
 import com.viglet.turing.genai.provider.llm.TurGenAiLlmProvider;
 import com.viglet.turing.genai.provider.llm.TurGenAiLlmProviderFactory;
 import com.viglet.turing.genai.tool.TurToolCallbackPipeline;
 import com.viglet.turing.resilience.llm.TurLlmModelFactory;
 import com.viglet.turing.genai.tool.TurMcpToolCallbackService;
 import com.viglet.turing.genai.tool.TurDslToolService;
+import com.viglet.turing.genai.catalog.TurCatalogCopilotToolService;
+import com.viglet.turing.genai.catalog.TurRankingExplainToolService;
 import com.viglet.turing.persistence.model.llm.TurLLMInstance;
 import com.viglet.turing.persistence.repository.llm.TurLLMInstanceRepository;
 import com.viglet.turing.service.llm.tokenusage.TurLLMTokenUsageService;
@@ -56,7 +58,8 @@ public class TurLLMSemanticChatAPI {
             1. List all available Semantic Navigation sites (list_sites)
             2. Get field mappings for a site (get_site_fields)
             3. Search content within a site (search_site)
-            4. Any additional tools provided by registered MCP servers
+            4. Talk to a catalog in plain language and get cited, objectively-ranked results (catalog_search)
+            5. Any additional tools provided by registered MCP servers
 
             CRITICAL RULES:
             1. ALWAYS call list_sites first to discover available sites and their exact locale codes.
@@ -79,6 +82,8 @@ public class TurLLMSemanticChatAPI {
     private final TurLlmModelFactory llmModelFactory;
     private final TurSecretCryptoService turSecretCryptoService;
     private final TurDslToolService dslToolService;
+    private final TurCatalogCopilotToolService catalogCopilotToolService;
+    private final TurRankingExplainToolService rankingExplainToolService;
     private final TurMcpToolCallbackService mcpToolCallbackService;
     private final TurToolCallbackPipeline toolCallbackPipeline;
     private final TurLLMTokenUsageService tokenUsageService;
@@ -90,6 +95,8 @@ public class TurLLMSemanticChatAPI {
             TurLlmModelFactory llmModelFactory,
             TurSecretCryptoService turSecretCryptoService,
             TurDslToolService dslToolService,
+            TurCatalogCopilotToolService catalogCopilotToolService,
+            TurRankingExplainToolService rankingExplainToolService,
             TurMcpToolCallbackService mcpToolCallbackService,
             TurToolCallbackPipeline toolCallbackPipeline,
             TurLLMTokenUsageService tokenUsageService,
@@ -100,6 +107,8 @@ public class TurLLMSemanticChatAPI {
         this.llmModelFactory = llmModelFactory;
         this.turSecretCryptoService = turSecretCryptoService;
         this.dslToolService = dslToolService;
+        this.catalogCopilotToolService = catalogCopilotToolService;
+        this.rankingExplainToolService = rankingExplainToolService;
         this.mcpToolCallbackService = mcpToolCallbackService;
         this.toolCallbackPipeline = toolCallbackPipeline;
         this.tokenUsageService = tokenUsageService;
@@ -132,7 +141,7 @@ public class TurLLMSemanticChatAPI {
         ChatModel chatModel = llmModelFactory.createChatModel(turLLMInstance, decryptedApiKey);
 
         ToolCallback[] semanticCallbacks = MethodToolCallbackProvider.builder()
-                .toolObjects(dslToolService)
+                .toolObjects(dslToolService, catalogCopilotToolService, rankingExplainToolService)
                 .build()
                 .getToolCallbacks();
 
@@ -151,7 +160,12 @@ public class TurLLMSemanticChatAPI {
         // internal tool execution is now the default when tool callbacks are
         // present (eligibility is decided by whether the model returns tool
         // calls), so we just register the callbacks.
-        var chatOptions = DefaultToolCallingChatOptions.builder()
+        //
+        // Seed from the provider's own concrete options — Spring AI 2.0.0
+        // hard-casts prompt.getOptions() to the provider type, so a generic
+        // DefaultToolCallingChatOptions throws ClassCastException. See
+        // TurChatToolOptions.
+        var chatOptions = TurChatToolOptions.builderFrom(chatModel)
                 .toolCallbacks(allCallbacks)
                 .build();
 

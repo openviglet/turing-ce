@@ -115,11 +115,12 @@ class TurChaoticChatFlowEngineIT extends AbstractTuringSpringIT {
     // ─────────────────────────── Structural ───────────────────────────
 
     @Test
-    void importsAllSevenFlowsWithPersonasAndSlots() {
-        assertThat(imported.flows()).hasSize(7);
+    void importsAllEightFlowsWithPersonasAndSlots() {
+        assertThat(imported.flows()).hasSize(8);
         assertThat(imported.byTransientId().keySet())
                 .containsExactlyInAnyOrder("chaos-main", "chaos-sandwich", "chaos-abyss",
-                        "chaos-paperwork", "chaos-ouroboros", "chaos-scheduler", "chaos-suspend");
+                        "chaos-paperwork", "chaos-ouroboros", "chaos-scheduler", "chaos-suspend",
+                        "chaos-approval");
         // 5 distinct personas declared on the main flow.
         assertThat(imported.personas()).hasSize(5);
         assertThat(personaRepository.findByNameIgnoreCase("Stamp Clerk")).isPresent();
@@ -163,7 +164,7 @@ class TurChaoticChatFlowEngineIT extends AbstractTuringSpringIT {
         assertThat(nodeTypes).contains(
                 "start", "end", "aiQuestion", "formCapture", "condition", "functionCall",
                 "scheduleAgent", "subFlow", "subFlowSwitch", "persona", "switch", "slot",
-                "writeSlot", "suspend");
+                "writeSlot", "humanApproval", "suspend");
     }
 
     // ─────────────────────────── Golden path (main flow) ───────────────────────────
@@ -197,9 +198,9 @@ class TurChaoticChatFlowEngineIT extends AbstractTuringSpringIT {
                 .containsEntry("sw", "exact")                       // exact-match switch branch
                 .containsEntry("stamp", "approved")                 // from descended paperwork sub-flow
                 .containsEntry("paperwork", "stamped")              // paperwork condition YES
-                .containsEntry("paper_summary", "Form approved for alpha"); // cross-scope interpolation
-        // slot DELETE removed the marker the YES branch set earlier.
-        assertThat(vars).doesNotContainKey("marker");
+                .containsEntry("paper_summary", "Form approved for alpha") // cross-scope interpolation
+                // slot DELETE removed the marker the YES branch set earlier.
+                .doesNotContainKey("marker");
 
         // Last persona walked was the Stamp Clerk inside the paperwork sub-flow.
         TurPersona clerk = personaRepository.findByNameIgnoreCase("Stamp Clerk").orElseThrow();
@@ -231,9 +232,9 @@ class TurChaoticChatFlowEngineIT extends AbstractTuringSpringIT {
                 .containsEntry("sandwich", "club")
                 .containsEntry("order", "club on rye")          // writeSlot interpolation
                 .containsEntry("abyss_depth", "3")              // set INSIDE the descended abyss
-                .containsEntry("abyss_fn", "recovered");        // functionCall failure-edge routing
-        // The functionCall failed (missing tool) so its outputVariable was never written.
-        assertThat(vars).doesNotContainKey("abyss_out");
+                .containsEntry("abyss_fn", "recovered")         // functionCall failure-edge routing
+                // The functionCall failed (missing tool) so its outputVariable was never written.
+                .doesNotContainKey("abyss_out");
     }
 
     // ─────────────────────────── scheduleAgent failure edge ───────────────────────────
@@ -250,8 +251,9 @@ class TurChaoticChatFlowEngineIT extends AbstractTuringSpringIT {
         // no JMS enqueue, no parking.
         assertThat(leaf.getCurrentNodeId()).isEqualTo("end-sched");
         Map<String, String> vars = ChatFlowOps.readVariables(leaf);
-        assertThat(vars).containsEntry("sched_status", "recovered");
-        assertThat(vars).doesNotContainKey("sched_out");
+        assertThat(vars)
+                .containsEntry("sched_status", "recovered")
+                .doesNotContainKey("sched_out");
         // No pending marker left behind (fire() bailed before enqueue).
         assertThat(vars.keySet()).noneMatch(k -> k.startsWith("__scheduleAgent_pending_"));
     }
@@ -284,6 +286,48 @@ class TurChaoticChatFlowEngineIT extends AbstractTuringSpringIT {
         assertThat(ChatFlowOps.readVariables(resumed))
                 .containsEntry("suspend_post", "after")   // post-suspend slot ran on resume
                 .containsEntry("approval", "granted");     // external slotUpdate applied
+        assertThat(engine.findSuspendedReason(conv)).isEmpty();
+    }
+
+    // ─────────────────────────── humanApproval park + decision resume (T119) ───────────────────────────
+
+    /**
+     * The HITL analogue of the suspend test: {@code loadOrInitState} parks the
+     * cursor on a {@code humanApproval} node (T119) exactly as it parks on a
+     * {@code suspend} node, but here the gate only pops once the operator's
+     * decision lands in the node's {@code approvalSlot}. Writing
+     * {@code operator_decision} via {@code resumeSuspendedFlow} (the same path
+     * the approval endpoint, the T120 co-pilot, and the timeout sweep use)
+     * advances the walker past the gate to the end.
+     */
+    @Test
+    void approvalFlow_parksOnHumanApprovalNode_thenDecisionResumesPastIt() {
+        TurChatFlow approval = flow("chaos-approval");
+        String conv = newConv();
+
+        TurChatFlowState parked = engine.loadOrInitState(conv, approval,
+                engine.parseGraph(approval).orElseThrow()).orElseThrow();
+
+        // Parked on the humanApproval node; the pre-slot ran, the post-slot did not.
+        assertThat(parked.getCurrentNodeId()).isEqualTo("approval-gate");
+        assertThat(ChatFlowOps.readVariables(parked))
+                .containsEntry("approval_pre", "before")
+                .doesNotContainKey("approval_post");
+        // getConversationState surfaces humanApproval as a parked reason (alongside suspend).
+        assertThat(engine.findSuspendedReason(conv)).contains("Awaiting absurd human approval");
+
+        // The decision must land in the node's approvalSlot (operator_decision);
+        // a slot update on any other name leaves the gate parked.
+        TurChatFlowEngineService.ResumeResult result =
+                engine.resumeSuspendedFlow(conv, Map.of("operator_decision", "approve"), "operator");
+        assertThat(result.resumed()).isEqualTo(1);
+
+        TurChatFlowState resumed = stateRepository
+                .findByConversationIdAndFlow_Id(conv, approval.getId()).orElseThrow();
+        assertThat(resumed.getCurrentNodeId()).isEqualTo("end-approval");
+        assertThat(ChatFlowOps.readVariables(resumed))
+                .containsEntry("approval_post", "after")          // post-approval slot ran on resume
+                .containsEntry("operator_decision", "approve");   // decision recorded in the approval slot
         assertThat(engine.findSuspendedReason(conv)).isEmpty();
     }
 

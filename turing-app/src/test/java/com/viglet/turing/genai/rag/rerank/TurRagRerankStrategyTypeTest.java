@@ -11,7 +11,6 @@ package com.viglet.turing.genai.rag.rerank;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
@@ -31,6 +30,8 @@ class TurRagRerankStrategyTypeTest {
             "llm,LLM",
             "  Cross_Encoder  ,CROSS_ENCODER",
             "COHERE,COHERE",
+            "voyage,VOYAGE",
+            "VOYAGE,VOYAGE",
     })
     void parsesKnownValuesCaseInsensitively(String input, TurRagRerankStrategyType expected) {
         assertThat(TurRagRerankStrategyType.fromValue(input)).isEqualTo(expected);

@@ -37,15 +37,17 @@ import type { TurSNSiteSpotlight } from "@/models/sn/sn-site-spotlight.model"
 import { TurSNSiteLocaleService } from "@/services/sn/sn.site.locale.service"
 import { TurSNSiteSpotlightService } from "@/services/sn/sn.site.spotlight.service"
 import { fetchSearch, type TurDocument, type TurSearchResponse } from "@viglet/turing-react-sdk"
+import { isAxiosError } from "axios"
 import { toast } from "@viglet/viglet-design-system"
 import { IconCirclePlus, IconDeviceFloppy, IconFileText, IconHelp, IconSearch, IconSpeakerphone, IconTags, IconTrash, IconX } from "@tabler/icons-react"
 import { DialogDelete } from "@/components/dialog.delete"
 import React, { useEffect, useState } from "react"
 import { useForm } from "react-hook-form"
 import { useTranslation } from "react-i18next"
-import { useNavigate } from "react-router-dom"
+import { Link, useNavigate } from "react-router-dom"
 import { StickyPageHeader } from "../../sticky-page-header"
-import { SectionCard } from "../../ui/section-card"
+import { BentoHero, BentoScrollSaveBar } from "@/components/bento"
+import { SNFormSection, type SNFormChrome } from "@/components/sn/sn-form-section"
 
 const turSNSiteSpotlightService = new TurSNSiteSpotlightService();
 const turSNSiteLocaleService = new TurSNSiteLocaleService();
@@ -57,15 +59,20 @@ interface Props {
     onDelete?: () => void;
     open?: boolean;
     setOpen?: React.Dispatch<React.SetStateAction<boolean>>;
+    /** SN instance base route for save/cancel navigation. Defaults to the
+     *  console; the Bento surface passes `ROUTES.BENTO_SN_INSTANCE` (T576). */
+    baseRoute?: string;
+    /** Render chrome. console = StickyPageHeader + SectionCards; bento = BentoHero + frosted BentoFormSection cards (T576). Defaults to console. */
+    chrome?: SNFormChrome;
 }
 
-export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, onDelete, open, setOpen }) => {
+export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, onDelete, open, setOpen, baseRoute = ROUTES.SN_INSTANCE, chrome = "console" }) => {
     const { t } = useTranslation();
     const form = useForm<TurSNSiteSpotlight>({
         defaultValues: value,
     });
     const navigate = useNavigate();
-    const urlBase = `${ROUTES.SN_INSTANCE}/${snSiteId}/spotlight`;
+    const urlBase = `${baseRoute}/${snSiteId}/spotlight`;
     const [locales, setLocales] = useState<TurSNSiteLocale[]>([]);
     const [searchDialogOpen, setSearchDialogOpen] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
@@ -80,6 +87,16 @@ export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, o
     useEffect(() => {
         form.reset(value);
     }, [value]);
+
+    // Default the language to the site's first available locale when none is set
+    // yet (new spotlight). The document search is scoped by locale, and a site is
+    // rarely indexed in "en-US" — firing that hardcoded fallback returns HTTP 404
+    // ("site+language not indexed"), which used to surface as a search error.
+    useEffect(() => {
+        if (locales.length > 0 && !form.getValues("language")) {
+            form.setValue("language", locales[0].language);
+        }
+    }, [locales, value]);
 
     async function onSubmit(data: TurSNSiteSpotlight) {
         let hasError = false;
@@ -158,18 +175,29 @@ export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, o
 
     async function searchDocument(page: number) {
         const siteName = value.turSNSite?.name;
-        const language = form.getValues("language");
+        const language = form.getValues("language") || locales[0]?.language;
         if (!siteName || !searchQuery) return;
+        if (!language) {
+            toast.error(t("forms.snSpotlight.selectLanguageFirst"));
+            return;
+        }
         try {
             const result = await fetchSearch(siteName, {
                 q: searchQuery,
                 p: page.toString(),
-                _setlocale: language || "en-US",
+                _setlocale: language,
                 sort: "title:desc",
             });
             setSearchResult(result);
         } catch (error) {
-            console.error("IconSearch error", error);
+            // A 404 means this site isn't indexed in the selected locale (or has no
+            // matching content) — that's an empty result, not a failure. Only real
+            // errors (5xx / network) get an error toast.
+            if (isAxiosError(error) && error.response?.status === 404) {
+                setSearchResult({ results: { document: [] } } as unknown as TurSearchResponse);
+                return;
+            }
+            console.error("Document search error", error);
             toast.error(t("forms.snSpotlight.searchFailed"));
         }
     }
@@ -213,32 +241,53 @@ export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, o
         form.handleSubmit(onSubmit)(e);
     }
 
+    const isBento = chrome === "bento";
+
+    const actions = (
+        <>
+            {onDelete && open !== undefined && setOpen && <DialogDelete feature={t("sn.spotlight.title")} name={value?.name || t("sn.spotlight.newSpotlight")} onDelete={onDelete} open={open} setOpen={setOpen} />}
+            <GradientButton type="submit" size="sm">
+                <IconDeviceFloppy className="size-4" />
+                {t("forms.formActions.saveChanges")}
+            </GradientButton>
+            <GradientButton type="button" variant="outline" size="sm" onClick={() => navigate(urlBase)}>
+                <IconX className="size-4" />
+                {t("forms.formActions.cancel")}
+            </GradientButton>
+        </>
+    );
+
     return (
 
         <Form {...form}>
-            <form onSubmit={handleFormSubmit} className="space-y-4 px-4 lg:px-6 pb-8">
-                <StickyPageHeader>
-                    <StickyPageHeader.Title
-                        icon={IconSpeakerphone}
-                        feature={t("sn.spotlight.title")}
-                        description={t("sn.spotlight.description")}
+            <form onSubmit={handleFormSubmit} className={isBento ? "space-y-5 pb-8" : "space-y-4 px-4 lg:px-6 pb-8"}>
+                {isBento ? (
+                    <>
+                    <BentoHero
+                        eyebrow={<Link to={urlBase} className="hover:text-foreground">{t("sn.spotlight.title")}</Link>}
+                        leading={
+                            <span className="grid h-12 w-12 place-items-center rounded-2xl bg-linear-to-br from-emerald-500 to-teal-600 text-white shadow-md">
+                                <IconSpeakerphone size={24} />
+                            </span>
+                        }
+                        title={value?.name || t("sn.spotlight.newSpotlight")}
+                        subtitle={t("sn.spotlight.description")}
+                        trailing={<div className="bento-fade-out flex shrink-0 items-center gap-2">{actions}</div>}
                     />
-                    <StickyPageHeader.Actions>
-                        {onDelete && open !== undefined && setOpen && <DialogDelete feature={t("sn.spotlight.title")} name={value?.name || t("sn.spotlight.newSpotlight")} onDelete={onDelete} open={open} setOpen={setOpen} />}
-                        <GradientButton type="submit" size="sm">
-                            <IconDeviceFloppy className="size-4" />
-                            {t("forms.formActions.saveChanges")}
-                        </GradientButton>
-                        <GradientButton type="button" variant="outline" size="sm" onClick={() => navigate(urlBase)}>
-                            <IconX className="size-4" />
-                            {t("forms.formActions.cancel")}
-                        </GradientButton>
-                    </StickyPageHeader.Actions>
-                </StickyPageHeader>
+                    <BentoScrollSaveBar onCancel={() => navigate(urlBase)} />
+                    </>
+                ) : (
+                    <StickyPageHeader>
+                        <StickyPageHeader.Title
+                            icon={IconSpeakerphone}
+                            feature={t("sn.spotlight.title")}
+                            description={t("sn.spotlight.description")}
+                        />
+                        <StickyPageHeader.Actions>{actions}</StickyPageHeader.Actions>
+                    </StickyPageHeader>
+                )}
                 {/* General Section */}
-                <SectionCard variant="blue">
-                    <SectionCard.Header icon={IconSpeakerphone} title={t("forms.snSpotlight.details")} description={t("forms.snSpotlight.detailsDesc")} />
-                    <SectionCard.Content>
+                <SNFormSection chrome={chrome} icon={IconSpeakerphone} tone="blue" title={t("forms.snSpotlight.details")} description={t("forms.snSpotlight.detailsDesc")}>
                         {/* Name */}
                         <FormField
                             control={form.control}
@@ -316,13 +365,10 @@ export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, o
                                 </FormItemTwoColumns>
                             )}
                         />
-                    </SectionCard.Content>
-                </SectionCard>
+                </SNFormSection>
 
                 {/* Terms Section */}
-                <SectionCard variant="violet">
-                    <SectionCard.Header icon={IconTags} title={t("forms.snSpotlight.triggerTerms")} description={t("forms.snSpotlight.triggerTermsDesc")} />
-                    <SectionCard.Content>
+                <SNFormSection chrome={chrome} icon={IconTags} tone="violet" title={t("forms.snSpotlight.triggerTerms")} description={t("forms.snSpotlight.triggerTermsDesc")}>
                         <div>
                             <div className="mb-2 font-medium">{t("forms.snSpotlight.whenSearched")}</div>
                             <div className="text-sm text-muted-foreground mb-2">
@@ -413,13 +459,10 @@ export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, o
                                 <p className="text-sm font-medium text-destructive mt-2">{termsError}</p>
                             )}
                         </div>
-                    </SectionCard.Content>
-                </SectionCard>
+                </SNFormSection>
 
                 {/* Documents Section */}
-                <SectionCard variant="emerald">
-                    <SectionCard.Header icon={IconFileText} title={t("forms.snSpotlight.documents")} description={t("forms.snSpotlight.documentsDesc")} />
-                    <SectionCard.Content>
+                <SNFormSection chrome={chrome} icon={IconFileText} tone="emerald" title={t("forms.snSpotlight.documents")} description={t("forms.snSpotlight.documentsDesc")}>
                         <div>
                             <div className="mb-2 font-medium">{t("forms.snSpotlight.showDocuments")}</div>
                             <div className="text-sm text-muted-foreground mb-4">
@@ -492,6 +535,11 @@ export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, o
                                                 </Table>
                                             </div>
                                         )}
+                                        {searchResult && (searchResult.results?.document?.length ?? 0) === 0 && (
+                                            <p className="py-4 text-center text-sm text-muted-foreground">
+                                                {t("forms.snSpotlight.noResults")}
+                                            </p>
+                                        )}
                                         {searchResult?.pagination && searchResult.pagination.length > 0 && (
                                             <div className="flex items-center gap-1 pt-2">
                                                 {searchResult.pagination.map((page) => (
@@ -553,8 +601,7 @@ export const SNSiteSpotlightForm: React.FC<Props> = ({ snSiteId, value, isNew, o
                                 <p className="text-sm font-medium text-destructive mt-2">{documentsError}</p>
                             )}
                         </div>
-                    </SectionCard.Content>
-                </SectionCard>
+                </SNFormSection>
             </form>
         </Form>
     );

@@ -109,6 +109,24 @@ public class TurExperimentSignificanceService {
             this.storeColumn = col;
             this.matchValue = val;
         }
+
+        /**
+         * Resolves a stored metric name (e.g. the per-experiment
+         * {@code TurChatFlow.experimentSuccessMetric}) to the enum, falling
+         * back to {@link #GOAL_ACHIEVED} for {@code null}, blank, or unknown
+         * values — so a stale or mistyped config never zeroes out conversions
+         * silently. T241.
+         */
+        public static SuccessMetric fromNameOrDefault(String name) {
+            if (name == null || name.isBlank()) {
+                return GOAL_ACHIEVED;
+            }
+            try {
+                return valueOf(name.trim());
+            } catch (IllegalArgumentException e) {
+                return GOAL_ACHIEVED;
+            }
+        }
     }
 
     /**
@@ -182,17 +200,18 @@ public class TurExperimentSignificanceService {
         Instant fromInstant = from == null ? Instant.now().minusSeconds(30L * 24 * 3600) : from;
         Instant toInstant   = to   == null ? Instant.now() : to;
         List<Map<String, Object>> rows = analyticsService.getStore()
-                .findRecentSessions(fromInstant, toInstant, null, null,
-                        null, null, null, null, 10_000);
+                .findRecentSessions(fromInstant, toInstant, TurChatSessionFilter.none(), 10_000);
 
         Map<String, long[]> byVariant = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) {
-            if (!experimentKey.equals(row.get("experimentKey"))) continue;
-            String variant = stringValue(row.get("variantLabel"));
-            if (variant == null) continue;
-            long[] counters = byVariant.computeIfAbsent(variant, k -> new long[2]);
-            counters[0]++;
-            if (isSuccess(row, metric)) counters[1]++;
+            if (experimentKey.equals(row.get("experimentKey"))) {
+                String variant = stringValue(row.get("variantLabel"));
+                if (variant != null) {
+                    long[] counters = byVariant.computeIfAbsent(variant, k -> new long[2]);
+                    counters[0]++;
+                    if (isSuccess(row, metric)) counters[1]++;
+                }
+            }
         }
         List<VariantStat> out = new ArrayList<>();
         for (Map.Entry<String, long[]> entry : byVariant.entrySet()) {
@@ -204,15 +223,22 @@ public class TurExperimentSignificanceService {
         return out;
     }
 
+    /**
+     * Enum-driven success test (T241): reads {@code metric.storeColumn} from
+     * the session row and compares against {@code metric.matchValue}. A
+     * {@code null} match value means "any non-blank value counts" (e.g. a
+     * captured lead email). This replaces the hard-coded switch so a
+     * per-experiment metric override actually selects a different conversion —
+     * and so the handoff / lead metrics light up automatically the moment the
+     * analytics store starts persisting those columns (today only
+     * {@code goalAchieved} is populated, so the others still evaluate to 0).
+     */
     private static boolean isSuccess(Map<String, Object> row, SuccessMetric metric) {
-        return switch (metric) {
-            case GOAL_ACHIEVED -> "YES".equals(row.get("goalAchieved"));
-            // handoff / lead capture flags would arrive as slot values in
-            // the row when the analytics store starts persisting them
-            // (TODO once slot snapshots are part of the session record).
-            case HANDOFF_WHATSAPP -> false;
-            case LEAD_EMAIL_CAPTURED -> false;
-        };
+        String value = stringValue(row.get(metric.storeColumn));
+        if (value == null) {
+            return false;
+        }
+        return metric.matchValue == null || metric.matchValue.equalsIgnoreCase(value);
     }
 
     private static String stringValue(Object raw) {

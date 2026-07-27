@@ -175,7 +175,6 @@ public class TurRagBm25Indexer {
     @Transactional
     public boolean clear(TurRagBm25Core core) {
         ensureProvisioned(core);
-        TurSearchEnginePlugin plugin = pluginFactory.getPluginForInstance(core.getTurSEInstance());
         // deleteByField with a match-all-ish query is engine-dependent;
         // the simpler and more portable path is delete-by-field on a
         // sentinel that every chunk has. Every RAG chunk has FIELD_ID
@@ -203,12 +202,15 @@ public class TurRagBm25Indexer {
      * the SE plugin expects. Returns {@code null} when the chunk is
      * unusable (no id, no text).
      */
+    @SuppressWarnings("java:S1168") // null is an "unusable chunk → skip" sentinel
+    // (caller adds to the batch only when non-null); an empty map would index a
+    // doc with no id/content.
     private static Map<String, Object> toIndexableDoc(Document chunk) {
         if (chunk == null) {
             return null;
         }
         String id = chunk.getId();
-        if (id == null || id.isBlank()) {
+        if (id.isBlank()) {
             return null;
         }
         String text = chunk.getText();
@@ -219,19 +221,17 @@ public class TurRagBm25Indexer {
         doc.put(FIELD_ID, id);
         doc.put(FIELD_CONTENT, text);
         Map<String, Object> metadata = chunk.getMetadata();
-        if (metadata != null) {
-            Object assetId = metadata.get("objectName");
-            if (assetId != null) {
-                doc.put(FIELD_ASSET_ID, assetId.toString());
-            }
-            Object chunkIndex = metadata.get("chunkIndex");
-            if (chunkIndex != null) {
-                doc.put(FIELD_CHUNK_INDEX, chunkIndex);
-            }
-            Object sourceFile = metadata.get("fileName");
-            if (sourceFile != null) {
-                doc.put(FIELD_SOURCE_FILE, sourceFile.toString());
-            }
+        Object assetId = metadata.get("objectName");
+        if (assetId != null) {
+            doc.put(FIELD_ASSET_ID, assetId.toString());
+        }
+        Object chunkIndex = metadata.get(FIELD_CHUNK_INDEX);
+        if (chunkIndex != null) {
+            doc.put(FIELD_CHUNK_INDEX, chunkIndex);
+        }
+        Object sourceFile = metadata.get("fileName");
+        if (sourceFile != null) {
+            doc.put(FIELD_SOURCE_FILE, sourceFile.toString());
         }
         return doc;
     }

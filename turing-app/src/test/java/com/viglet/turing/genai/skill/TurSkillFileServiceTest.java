@@ -32,7 +32,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import com.viglet.turing.api.skill.TurSkillFileNode;
 import com.viglet.turing.persistence.model.skill.TurSkill;
@@ -67,16 +66,20 @@ class TurSkillFileServiceTest {
         TurConfigProperties configProperties = new TurConfigProperties();
         TurStorageProperty storageProperty = new TurStorageProperty();
         storageProperty.setSkillsPath("skills");
+        TurStorageProperty.TurFilesystemProperty fs = new TurStorageProperty.TurFilesystemProperty();
+        fs.setPath(tempDir.toAbsolutePath().normalize().toString());
+        storageProperty.setFilesystem(fs);
         configProperties.setStorage(storageProperty);
 
         TurFilesystemStorageService storage = new TurFilesystemStorageService(configProperties);
-        ReflectionTestUtils.setField(storage, "basePath", tempDir.toAbsolutePath().normalize());
+        storage.init();
 
         store = new LinkedHashMap<>();
         TurSkillRepository repository = inMemoryRepository(store);
         TurSkillFrontmatterParser parser = new TurSkillFrontmatterParser();
         catalog = new TurSkillCatalogService(storage, repository, parser, configProperties);
-        fileService = new TurSkillFileService(storage, repository, catalog, parser, configProperties);
+        fileService = new TurSkillFileService(storage, repository, catalog, parser, configProperties,
+                new com.viglet.turing.properties.TurAbuseControlProperty());
     }
 
     @Test
@@ -88,6 +91,21 @@ class TurSkillFileServiceTest {
         assertThat(fileService.readFile(skill.getId(), "SKILL.md")).get().asString()
                 .contains("name: my-first-skill")
                 .contains("# My First Skill");
+    }
+
+    // T645 / §XXXVII.7 — Zip-Slip entry-name guard.
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "../evil.md", "a/../../evil.md", "..\\evil.md", "foo/../../bar/x" })
+    void hasTraversalSegmentDetectsEscapes(String name) {
+        assertThat(TurSkillFileService.hasTraversalSegment(name)).isTrue();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "SKILL.md", "scripts/build.py", "a/b/c.txt", "file..name.md" })
+    void hasTraversalSegmentAllowsNormalNames(String name) {
+        assertThat(TurSkillFileService.hasTraversalSegment(name)).isFalse();
     }
 
     @Test
@@ -107,9 +125,10 @@ class TurSkillFileServiceTest {
 
         List<String> paths = fileService.listFiles(skill.getId()).stream().map(TurSkillFileNode::path).toList();
 
-        assertThat(paths).contains("SKILL.md", "scripts", "scripts/build.py", "references", "references/guide.md");
-        // Paths are relative — none leaks the storage prefix.
-        assertThat(paths).noneMatch(p -> p.startsWith("skills/"));
+        assertThat(paths)
+                .contains("SKILL.md", "scripts", "scripts/build.py", "references", "references/guide.md")
+                // Paths are relative — none leaks the storage prefix.
+                .noneMatch(p -> p.startsWith("skills/"));
     }
 
     @Test
@@ -150,9 +169,10 @@ class TurSkillFileServiceTest {
     @Test
     void pathTraversalIsRejected() {
         TurSkill skill = fileService.createSkill("safe");
-        assertThatThrownBy(() -> fileService.writeFile(skill.getId(), "../escape.txt", "x"))
+        String skillId = skill.getId();
+        assertThatThrownBy(() -> fileService.writeFile(skillId, "../escape.txt", "x"))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> fileService.readFile(skill.getId(), "/etc/passwd"))
+        assertThatThrownBy(() -> fileService.readFile(skillId, "/etc/passwd"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -197,7 +217,7 @@ class TurSkillFileServiceTest {
     }
 
     @Test
-    void exportThenImportRoundTrips() throws IOException {
+    void exportThenImportRoundTrips() {
         TurSkill original = fileService.createSkill("round-trip");
         fileService.writeFile(original.getId(), "references/notes.md", "# notes");
         byte[] exported = fileService.exportZip(original.getId());
@@ -215,7 +235,8 @@ class TurSkillFileServiceTest {
     @Test
     void importZipWithNoSkillMdIsRejected() throws IOException {
         byte[] zip = zip(Map.of("README.md", "not a skill"));
-        assertThatThrownBy(() -> fileService.importZip(new MockMultipartFile("file", "x.zip", "application/zip", zip)))
+        var file = new MockMultipartFile("file", "x.zip", "application/zip", zip);
+        assertThatThrownBy(() -> fileService.importZip(file))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -227,7 +248,8 @@ class TurSkillFileServiceTest {
         TurSkillFrontmatterParser parser = new TurSkillFrontmatterParser();
         TurConfigProperties props = new TurConfigProperties();
         TurSkillCatalogService inertCatalog = new TurSkillCatalogService(disabled, repository, parser, props);
-        TurSkillFileService inert = new TurSkillFileService(disabled, repository, inertCatalog, parser, props);
+        TurSkillFileService inert = new TurSkillFileService(disabled, repository, inertCatalog, parser, props,
+                new com.viglet.turing.properties.TurAbuseControlProperty());
 
         assertThat(inert.isEnabled()).isFalse();
         assertThat(inert.listFiles("anything")).isEmpty();

@@ -173,7 +173,7 @@ public class TurSNSiteFieldExtAPI {
         return this.turSNSiteFieldExtRepository.findById(id).map(existing -> {
             updateFieldExtProperties(existing, payload);
 
-            turSNSiteRepository.findByIdNoCache(snSiteId).ifPresent(turSNSite -> {
+            turSNSiteRepository.findById(snSiteId).ifPresent(turSNSite -> {
                 existing.setFacetPosition(calculateFacetPositionForUpdate(payload, turSNSite));
                 this.turSNSiteFieldExtRepository.save(existing);
                 this.updateExternalField(payload, turSNSite);
@@ -187,7 +187,7 @@ public class TurSNSiteFieldExtAPI {
     @DeleteMapping("/{id}")
     public boolean turSNSiteFieldExtDelete(@PathVariable String snSiteId, @PathVariable String id) {
         return this.turSNSiteFieldExtRepository.findById(id).map(turSNSiteFieldExt -> {
-            turSNSiteRepository.findByIdNoCache(snSiteId)
+            turSNSiteRepository.findById(snSiteId)
                     .ifPresent(turSNSite -> turSNSiteFieldRepository.findById(turSNSiteFieldExt.getExternalId())
                             .ifPresent(turSNSiteField -> this.deleteSolrSchema(turSNSite, turSNSiteField)));
             if (TurSNFieldType.SE.equals(turSNSiteFieldExt.getSnType())) {
@@ -268,7 +268,11 @@ public class TurSNSiteFieldExtAPI {
         existing.setFacetItemType(payload.getFacetItemType());
         existing.setSecondaryFacet(Boolean.TRUE.equals(payload.getSecondaryFacet()));
         existing.setShowAllFacetItems(Boolean.TRUE.equals(payload.getShowAllFacetItems()));
-        existing.setHl(payload.getHl());
+        // T707 — reserved identifier/URL fields must never be highlightable: a
+        // <mark> injected into `id` corrupts the value clients feed to
+        // /search/similar ("Related"). Coerce hl=0 regardless of the payload.
+        existing.setHl(com.viglet.turing.commons.sn.field.TurSNFieldName
+                .isNonHighlightable(existing.getName()) ? 0 : payload.getHl());
         existing.setEnabled(payload.getEnabled());
         existing.setMlt(payload.getMlt());
         existing.setExternalId(payload.getExternalId());
@@ -334,7 +338,7 @@ public class TurSNSiteFieldExtAPI {
     }
 
     private TurSNSiteFieldExt createSEField(String snSiteId, TurSNSiteFieldExt fieldExt) {
-        return turSNSiteRepository.findByIdNoCache(snSiteId)
+        return turSNSiteRepository.findById(snSiteId)
                 .map(turSNSite -> createSEFieldForSite(turSNSite, fieldExt))
                 .orElse(TurSNSiteFieldExt.builder().build());
     }

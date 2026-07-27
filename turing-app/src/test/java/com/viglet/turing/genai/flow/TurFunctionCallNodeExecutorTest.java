@@ -54,7 +54,7 @@ class TurFunctionCallNodeExecutorTest {
 
     @Test
     @DisplayName("NATIVE happy path: interpolates {{slots}}, invokes callback, writes outputVariable")
-    void execute_happyPath() throws Exception {
+    void execute_happyPath() {
         ToolCallback callback = mock(ToolCallback.class);
         when(callback.getToolDefinition()).thenReturn(
                 new DefaultToolDefinition("search_site", "search a site", "{}"));
@@ -73,12 +73,12 @@ class TurFunctionCallNodeExecutorTest {
         verify(callback).call("{\"site\": \"edu\", \"q\": \"machine learning\"}");
         assertThat(result.ok()).isTrue();
         assertThat(result.result()).isEqualTo("hit-1 hit-2 hit-3");
-        assertThat(ChatFlowOps.readVariables(state).get("ann_results")).isEqualTo("hit-1 hit-2 hit-3");
+        assertThat(ChatFlowOps.readVariables(state)).containsEntry("ann_results", "hit-1 hit-2 hit-3");
     }
 
     @Test
     @DisplayName("blank aiInstruction defaults to '{}' — callback still invoked")
-    void execute_blankInstructionSendsEmptyJson() throws Exception {
+    void execute_blankInstructionSendsEmptyJson() {
         ToolCallback callback = mock(ToolCallback.class);
         when(callback.getToolDefinition()).thenReturn(
                 new DefaultToolDefinition("now", "current time", "{}"));
@@ -97,7 +97,7 @@ class TurFunctionCallNodeExecutorTest {
 
     @Test
     @DisplayName("side-effect only: blank outputVariable → no slot write, callback still invoked")
-    void execute_sideEffectOnly_noSlotWrite() throws Exception {
+    void execute_sideEffectOnly_noSlotWrite() {
         ToolCallback callback = mock(ToolCallback.class);
         when(callback.getToolDefinition()).thenReturn(
                 new DefaultToolDefinition("post_lead", "post a lead", "{}"));
@@ -165,7 +165,7 @@ class TurFunctionCallNodeExecutorTest {
 
     @Test
     @DisplayName("callback throws → failure, no slot write, exception swallowed")
-    void execute_callbackThrows_isFailureNotPropagated() throws Exception {
+    void execute_callbackThrows_isFailureNotPropagated() {
         ToolCallback callback = mock(ToolCallback.class);
         when(callback.getToolDefinition()).thenReturn(
                 new DefaultToolDefinition("flaky", "flaky tool", "{}"));
@@ -210,7 +210,7 @@ class TurFunctionCallNodeExecutorTest {
 
     @Test
     @DisplayName("null toolSource defaults to NATIVE — backward-compat for older flows")
-    void execute_nullToolSourceDefaultsToNative() throws Exception {
+    void execute_nullToolSourceDefaultsToNative() {
         ToolCallback callback = mock(ToolCallback.class);
         when(callback.getToolDefinition()).thenReturn(
                 new DefaultToolDefinition("hello", "greet", "{}"));

@@ -115,6 +115,12 @@ class TurSNSearchProcessTest {
         @Mock
         private TurSNSiteFieldExtRepository turSNSiteFieldExtRepository;
 
+        @Mock
+        private com.viglet.turing.sn.ranking.TurSNHybridRankingService hybridRankingService;
+
+        @Mock
+        private TurSNDuplicateClusteringService duplicateClusteringService;
+
         private com.viglet.turing.sn.facet.TurSNFacetRenderer turSNFacetRenderer() {
                 return new com.viglet.turing.sn.facet.TurSNFacetRenderer(
                                 searchEnginePluginFactory, turSolrQueryBuilder);
@@ -146,7 +152,8 @@ class TurSNSearchProcessTest {
                                 turSNFacetDefinitionFactory(), turSNFacetRenderer(),
                                 turSNPaginationBuilder(), turSNDocumentResponse(),
                                 turSNQueryContextBuilder(),
-                                new com.viglet.turing.observability.TurSearchPipelineObservation(null));
+                                new com.viglet.turing.observability.TurSearchPipelineObservation(null),
+                                hybridRankingService, duplicateClusteringService);
         }
 
         private TurSNSiteSearchContext context(String query) {
@@ -234,9 +241,9 @@ class TurSNSearchProcessTest {
                 when(snapshotService.getSnapshot("site", null)).thenReturn(Optional.of(
                                 snapshot(site, null, List.of(), Map.of(), List.of())));
                 TurSNSiteMetricAccessTermDomain term1 = TurSNSiteMetricAccessTermDomain
-                                .latest("one", Instant.now());
+                                .latest("one", Instant.parse("2026-06-15T12:00:00Z"));
                 TurSNSiteMetricAccessTermDomain term2 = TurSNSiteMetricAccessTermDomain
-                                .latest("two", Instant.now());
+                                .latest("two", Instant.parse("2026-06-15T12:00:00Z"));
                 when(turSNSiteMetricAccessRepositoryPort.findLatestSearches(eq("site-id"), eq("en"),
                                 eq("user"), any(PageRequest.class)))
                                 .thenReturn(List.of(term1, term2));

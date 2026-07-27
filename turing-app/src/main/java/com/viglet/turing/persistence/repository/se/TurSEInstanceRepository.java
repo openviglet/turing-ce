@@ -21,12 +21,6 @@
 
 package com.viglet.turing.persistence.repository.se;
 
-import java.util.List;
-import java.util.Optional;
-
-import org.jetbrains.annotations.NotNull;
-import org.springframework.cache.annotation.CacheEvict;
-import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -36,22 +30,8 @@ import com.viglet.turing.persistence.model.se.TurSEInstance;
 
 public interface TurSEInstanceRepository extends JpaRepository<TurSEInstance, String> {
 
-	@Cacheable("turSEInstancefindAll")
-	List<TurSEInstance> findAll();
-
-	@Override
-	@Cacheable("turSEInstancefindById")
-	@NotNull
-	Optional<TurSEInstance> findById(@NotNull String id);
-
-	@CacheEvict(value = { "turSEInstancefindAll", "turSEInstancefindById" }, allEntries = true)
-	@NotNull
-	@Override
-	<S extends TurSEInstance> S save(@NotNull S entity);
-
 	@Modifying
 	@Query("delete from  TurSEInstance si where si.id = ?1")
-	@CacheEvict(value = { "turSEInstancefindAll", "turSEInstancefindById" }, allEntries = true)
 	void delete(String id);
 
     /**
@@ -60,4 +40,11 @@ public interface TurSEInstanceRepository extends JpaRepository<TurSEInstance, St
      */
     @Query("select e from TurSEInstance e where e.tenantId = :tenantId or e.tenantId is null")
     java.util.List<TurSEInstance> findVisibleToTenant(@Param("tenantId") String tenantId);
+
+    /**
+     * T796 / §LIV.8 — SE instances backed by a given vendor (e.g. {@code LUCENE}),
+     * used to resolve/reuse a default embedded search engine when provisioning a
+     * vectorless KB without an explicit {@code seInstanceId}.
+     */
+    java.util.List<TurSEInstance> findByTurSEVendor_Id(String vendorId);
 }

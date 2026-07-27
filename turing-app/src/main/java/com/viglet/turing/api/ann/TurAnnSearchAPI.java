@@ -41,6 +41,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.viglet.turing.api.sn.search.TurSNSiteSearchService;
+import com.viglet.turing.genai.TurDefaultAgentResolver;
 import com.viglet.turing.genai.TurGenAiContext;
 import com.viglet.turing.genai.TurGenAiContextFactory;
 import com.viglet.turing.genai.TurRagFilters;
@@ -76,15 +77,18 @@ public class TurAnnSearchAPI {
     private final TurGenAiContextFactory turGenAiContextFactory;
     private final TurSNSiteLocaleRepository turSNSiteLocaleRepository;
     private final TurSNSiteSearchService turSNSiteSearchService;
+    private final TurDefaultAgentResolver turDefaultAgentResolver;
 
     public TurAnnSearchAPI(TurSNSearchProcess turSNSearchProcess,
             TurGenAiContextFactory turGenAiContextFactory,
             TurSNSiteLocaleRepository turSNSiteLocaleRepository,
-            TurSNSiteSearchService turSNSiteSearchService) {
+            TurSNSiteSearchService turSNSiteSearchService,
+            TurDefaultAgentResolver turDefaultAgentResolver) {
         this.turSNSearchProcess = turSNSearchProcess;
         this.turGenAiContextFactory = turGenAiContextFactory;
         this.turSNSiteLocaleRepository = turSNSiteLocaleRepository;
         this.turSNSiteSearchService = turSNSiteSearchService;
+        this.turDefaultAgentResolver = turDefaultAgentResolver;
     }
 
     public record TurAnnSearchRequest(
@@ -130,8 +134,10 @@ public class TurAnnSearchAPI {
             return ResponseEntity.notFound().build();
         }
         var genAi = site.getTurSNSiteGenAi();
-        var agent = genAi == null ? null : genAi.getTurAIAgent();
-        if (agent == null || agent.getEnabled() != 1 || !agent.isRagEnabled()) {
+        // T622 — honor the Default AI Agent fallback: a site with no agent of
+        // its own is still ANN-ready when a RAG-enabled global default exists
+        // (the context factory already resolves the same effective agent).
+        if (!turDefaultAgentResolver.isRagReady(genAi)) {
             // 403 (not 404) so the frontend can distinguish "RAG disabled" from
             // "endpoint missing / app not restarted yet".
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
@@ -248,10 +254,8 @@ public class TurAnnSearchAPI {
     }
 
     private int clampPageSize(Integer requested) {
-        if (requested == null || requested <= 0) {
-            return DEFAULT_TOP_K;
-        }
-        return Math.min(requested, MAX_TOP_K);
+        // Page size and top-K share the same bounds; delegate to keep one source of truth.
+        return clampTopK(requested);
     }
 
     private int clampTopK(Integer requested) {
@@ -289,29 +293,37 @@ public class TurAnnSearchAPI {
         Map<String, Map<String, Integer>> raw = new LinkedHashMap<>();
         for (TurAnnResultItem item : items) {
             for (Map.Entry<String, Object> entry : item.metadata().entrySet()) {
-                String key = entry.getKey();
                 Object value = entry.getValue();
                 if (value == null) {
                     continue;
                 }
-                Map<String, Integer> bucket = raw.computeIfAbsent(key, k -> new LinkedHashMap<>());
-                if (value instanceof Collection<?> collection) {
-                    for (Object v : collection) {
-                        if (v != null) {
-                            bucket.merge(String.valueOf(v), 1, (a, c) -> a + c);
-                        }
-                    }
-                } else if (value.getClass().isArray()) {
-                    for (Object v : (Object[]) value) {
-                        if (v != null) {
-                            bucket.merge(String.valueOf(v), 1, (a, c) -> a + c);
-                        }
-                    }
-                } else {
-                    bucket.merge(String.valueOf(value), 1, (a, c) -> a + c);
-                }
+                mergeMetadataValue(value, raw.computeIfAbsent(entry.getKey(), k -> new LinkedHashMap<>()));
             }
         }
+        return sortFacets(raw);
+    }
+
+    /** Counts {@code value} (scalar, collection, or array) into {@code bucket} by string form. */
+    private void mergeMetadataValue(Object value, Map<String, Integer> bucket) {
+        if (value instanceof Collection<?> collection) {
+            for (Object v : collection) {
+                if (v != null) {
+                    bucket.merge(String.valueOf(v), 1, (a, c) -> a + c);
+                }
+            }
+        } else if (value.getClass().isArray()) {
+            for (Object v : (Object[]) value) {
+                if (v != null) {
+                    bucket.merge(String.valueOf(v), 1, (a, c) -> a + c);
+                }
+            }
+        } else {
+            bucket.merge(String.valueOf(value), 1, (a, c) -> a + c);
+        }
+    }
+
+    /** Renders the raw counts into per-key facet items sorted by descending count. */
+    private Map<String, List<TurAnnFacetItem>> sortFacets(Map<String, Map<String, Integer>> raw) {
         Map<String, List<TurAnnFacetItem>> facets = new LinkedHashMap<>();
         for (Map.Entry<String, Map<String, Integer>> entry : raw.entrySet()) {
             List<TurAnnFacetItem> sorted = entry.getValue().entrySet().stream()

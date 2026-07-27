@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonInclude;
 
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -49,5 +50,24 @@ public class TurSNSiteSearchDocumentBean implements Serializable {
 	private List<TurSNSiteSearchDocumentMetadataBean> metadata;
 	@SuppressWarnings("java:S1948")
 	private Map<String, Object> fields;
+	/**
+	 * T389 / §XX.9 — objective "why this result ranked here" breakdown attached
+	 * by the hybrid ranking pipeline (ranks, RRF score, reranker delta). Omitted
+	 * from the JSON when empty, so the legacy lexical path's response is byte-for-byte
+	 * unchanged.
+	 */
+	@SuppressWarnings("java:S1948")
+	@JsonInclude(JsonInclude.Include.NON_EMPTY)
+	private Map<String, Object> rankingExplanation;
+
+	/**
+	 * T390 / §XX.10 — cluster of near-identical documents (the same real-world
+	 * entity arriving from many sources), attached on hybrid sites with
+	 * MoreLikeThis enabled so a catalog can collapse the duplicates while keeping
+	 * each source's provenance. Omitted from the JSON when absent, so the legacy
+	 * response is byte-for-byte unchanged.
+	 */
+	@JsonInclude(JsonInclude.Include.NON_NULL)
+	private TurSNDuplicateCluster duplicateCluster;
 
 }

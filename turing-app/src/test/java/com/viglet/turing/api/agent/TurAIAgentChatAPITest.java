@@ -23,6 +23,7 @@ import com.viglet.turing.domain.agent.TurAIAgentDomain;
 import com.viglet.turing.domain.agent.TurAIAgentRepositoryPort;
 import com.viglet.turing.domain.llm.TurLLMInstanceDomain;
 import com.viglet.turing.domain.llm.TurLLMInstanceRepositoryPort;
+import com.viglet.turing.genai.TurAgentChatRequest;
 import com.viglet.turing.genai.provider.llm.TurGenAiLlmProvider;
 import com.viglet.turing.genai.provider.llm.TurGenAiLlmProviderFactory;
 import com.viglet.turing.genai.tool.TurMcpToolCallbackService;
@@ -81,6 +82,8 @@ class TurAIAgentChatAPITest {
     private com.viglet.turing.genai.workspace.TurWorkspaceEventBus workspaceEventBus;
     @Mock
     private com.viglet.turing.service.chatslots.TurChatSlotSseRegistry slotSseRegistry;
+    @Mock
+    private com.viglet.turing.genai.safety.TurModerationService moderationService;
 
     private TurAIAgentChatAPI api;
 
@@ -92,12 +95,12 @@ class TurAIAgentChatAPITest {
                 llmProviderFactory, turSecretCryptoService, agentChatExecutor,
                 nativeChatExecutor,
                 turChatFlowRepository, chatFlowEngineService, urlSigner,
-                agentWorkspace, workspaceEventBus, slotSseRegistry);
+                agentWorkspace, workspaceEventBus, slotSseRegistry, moderationService);
     }
 
     private static TurAIAgentDomain agentDomain(String id) {
         return new TurAIAgentDomain(id, "Agent " + id, null, null, null, null, 1,
-                false, null, java.util.Set.of(), java.util.Set.of(), java.util.Set.of(),
+                false, null, null, java.util.Set.of(), java.util.Set.of(), java.util.Set.of(),
                 null, null);
     }
 
@@ -152,7 +155,7 @@ class TurAIAgentChatAPITest {
         var request = new TurAIAgentChatAPI.AgentChatRequest("llm-1",
                 List.of(new TurAIAgentChatAPI.ChatMessageItem("user", "Hi")), null, null);
 
-        assertThatThrownBy(() -> api.chat("missing", request, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
+        assertThatThrownBy(() -> api.chat("missing", request, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class), org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("AI Agent not found");
     }
@@ -167,7 +170,7 @@ class TurAIAgentChatAPITest {
         var request = new TurAIAgentChatAPI.AgentChatRequest("llm-1",
                 List.of(new TurAIAgentChatAPI.ChatMessageItem("user", "Hi")), null, null);
 
-        assertThatThrownBy(() -> api.chat("agent-1", request, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
+        assertThatThrownBy(() -> api.chat("agent-1", request, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class), org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("AI Agent is disabled");
     }
@@ -183,7 +186,7 @@ class TurAIAgentChatAPITest {
         var request = new TurAIAgentChatAPI.AgentChatRequest("missing-llm",
                 List.of(new TurAIAgentChatAPI.ChatMessageItem("user", "Hi")), null, null);
 
-        assertThatThrownBy(() -> api.chat("agent-1", request, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
+        assertThatThrownBy(() -> api.chat("agent-1", request, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class), org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("LLM instance not found");
     }
@@ -207,7 +210,7 @@ class TurAIAgentChatAPITest {
         var request = new TurAIAgentChatAPI.AgentChatRequest("llm-1",
                 List.of(new TurAIAgentChatAPI.ChatMessageItem("user", "Hi")), null, null);
 
-        assertThatThrownBy(() -> api.chat("agent-1", request, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
+        assertThatThrownBy(() -> api.chat("agent-1", request, org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class), org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("is not configured for agent");
     }
@@ -227,10 +230,8 @@ class TurAIAgentChatAPITest {
         agent.setEnabled(1);
         agent.setLlmInstances(Set.of(llmA, llmB));
         when(turAIAgentRepository.findById("agent-1")).thenReturn(Optional.of(agent));
-        when(agentChatExecutor.execute(org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+        when(agentChatExecutor.execute(
+                org.mockito.ArgumentMatchers.any(TurAgentChatRequest.class),
                 org.mockito.ArgumentMatchers.nullable(String.class),
                 org.mockito.ArgumentMatchers.nullable(String.class)))
                 .thenReturn(reactor.core.publisher.Flux.empty());
@@ -239,18 +240,16 @@ class TurAIAgentChatAPITest {
                 List.of(new TurAIAgentChatAPI.ChatMessageItem("user", "Hi")), null, null);
 
         var flux = api.chat("agent-1", request,
+                org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class),
                 org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class));
         flux.blockLast();
 
-        var captor = org.mockito.ArgumentCaptor.forClass(TurLLMInstance.class);
+        var captor = org.mockito.ArgumentCaptor.forClass(TurAgentChatRequest.class);
         org.mockito.Mockito.verify(agentChatExecutor).execute(
-                org.mockito.ArgumentMatchers.any(), captor.capture(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
+                captor.capture(),
                 org.mockito.ArgumentMatchers.nullable(String.class),
                 org.mockito.ArgumentMatchers.nullable(String.class));
-        assertThat(captor.getValue().getId()).isEqualTo("llm-a");
+        assertThat(captor.getValue().llmInstance().getId()).isEqualTo("llm-a");
         org.mockito.Mockito.verify(turLLMInstanceRepository, org.mockito.Mockito.never())
                 .findById(org.mockito.ArgumentMatchers.any());
     }
@@ -267,6 +266,7 @@ class TurAIAgentChatAPITest {
                 List.of(new TurAIAgentChatAPI.ChatMessageItem("user", "Hi")), null, null);
 
         assertThatThrownBy(() -> api.chat("agent-1", request,
+                org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletRequest.class),
                 org.mockito.Mockito.mock(jakarta.servlet.http.HttpServletResponse.class)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("has no LLM instance configured");
@@ -388,8 +388,9 @@ class TurAIAgentChatAPITest {
         var r1 = new TurAIAgentChatAPI.AgentChatRequest("llm-1", List.of(item), null, null);
         var r2 = new TurAIAgentChatAPI.AgentChatRequest("llm-1", List.of(item), null, null);
 
-        assertThat(r1).isEqualTo(r2);
-        assertThat(r1).hasSameHashCodeAs(r2);
+        assertThat(r1)
+                .isEqualTo(r2)
+                .hasSameHashCodeAs(r2);
     }
 
     @Test
@@ -397,8 +398,9 @@ class TurAIAgentChatAPITest {
         var r1 = new TurAIAgentChatAPI.ChatResponse("assistant", "Hi");
         var r2 = new TurAIAgentChatAPI.ChatResponse("assistant", "Hi");
 
-        assertThat(r1).isEqualTo(r2);
-        assertThat(r1).hasSameHashCodeAs(r2);
+        assertThat(r1)
+                .isEqualTo(r2)
+                .hasSameHashCodeAs(r2);
     }
 
     @Test
@@ -431,12 +433,12 @@ class TurAIAgentChatAPITest {
         // (fromIterable + Flux.just); the 25s heartbeat hasn't fired.
         assertThat(received).hasSize(2);
         assertThat(received.get(0).event())
-                .isEqualTo(com.viglet.turing.genai.workspace.TurWorkspaceEvent.PUT);
+                .isEqualTo(com.viglet.turing.genai.workspace.TurWorkspaceEvent.EVENT_PUT);
         assertThat(received.get(0).key()).isEqualTo("reports/a.csv");
         assertThat(received.get(0).contentType()).isEqualTo("text/csv");
         assertThat(received.get(0).size()).isEqualTo(12L);
         assertThat(received.get(1).event())
-                .isEqualTo(com.viglet.turing.genai.workspace.TurWorkspaceEvent.DELETE);
+                .isEqualTo(com.viglet.turing.genai.workspace.TurWorkspaceEvent.EVENT_DELETE);
         assertThat(received.get(1).key()).isEqualTo("old.txt");
         sub.dispose();
     }

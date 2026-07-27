@@ -51,7 +51,7 @@ public class TurOllamaLlmProvider implements TurGenAiLlmProvider {
         }
 
         OllamaApi ollamaApi = OllamaApi.builder()
-                .baseUrl(firstNonBlank(optionsParser.stringValue(options, BASE_URL), turLLMInstance.getUrl()))
+                .baseUrl(resolveBaseUrl(options, turLLMInstance))
                 .build();
 
         OllamaChatOptions.Builder optionsBuilder = OllamaChatOptions.builder()
@@ -112,7 +112,7 @@ public class TurOllamaLlmProvider implements TurGenAiLlmProvider {
         }
 
         OllamaApi ollamaApi = OllamaApi.builder()
-                .baseUrl(firstNonBlank(optionsParser.stringValue(options, BASE_URL), turLLMInstance.getUrl()))
+                .baseUrl(resolveBaseUrl(options, turLLMInstance))
                 .build();
 
         OllamaEmbeddingOptions embeddingOptions = OllamaEmbeddingOptions.builder()
@@ -212,6 +212,13 @@ public class TurOllamaLlmProvider implements TurGenAiLlmProvider {
         return OptionalInt.empty();
     }
 
+    @Override
+    public List<TurLlmModelOption> listModels(TurLLMInstance turLLMInstance, String decryptedApiKey) {
+        Map<String, Object> options = optionsParser.parse(turLLMInstance.getProviderOptionsJson());
+        String baseUrl = firstNonBlank(optionsParser.stringValue(options, BASE_URL), turLLMInstance.getUrl());
+        return TurLlmModelListingSupport.ollama(baseUrl);
+    }
+
     private List<String> parseStopSequences(String rawStop) {
         if (!StringUtils.hasText(rawStop)) {
             return List.of();
@@ -240,5 +247,14 @@ public class TurOllamaLlmProvider implements TurGenAiLlmProvider {
             }
         }
         return null;
+    }
+
+    /** Resolves the Ollama base URL, failing fast (never null) on a misconfigured instance. */
+    private String resolveBaseUrl(Map<String, Object> options, TurLLMInstance turLLMInstance) {
+        String baseUrl = firstNonBlank(optionsParser.stringValue(options, BASE_URL), turLLMInstance.getUrl());
+        if (!StringUtils.hasText(baseUrl)) {
+            throw new IllegalStateException("Missing base URL for Ollama instance: " + turLLMInstance.getId());
+        }
+        return baseUrl;
     }
 }

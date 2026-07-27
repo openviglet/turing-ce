@@ -32,6 +32,11 @@ import tools.jackson.databind.json.JsonMapper;
 @Slf4j
 public class TurRedisChatMemoryStore implements TurChatMemoryStore {
 
+    // --- S1192: extracted duplicated literals ---
+    private static final String CONTENT = "content";
+    private static final String TIMESTAMP = "timestamp";
+
+
     private static final JsonMapper MAPPER = JsonMapper.builder().build();
 
     private final JedisPool pool;
@@ -95,7 +100,7 @@ public class TurRedisChatMemoryStore implements TurChatMemoryStore {
     @Override
     public List<Map<String, Object>> findMessages(String conversationId, int limit) {
         if (conversationId == null || conversationId.isBlank()) return List.of();
-        int cap = Math.max(1, Math.min(limit, 1000));
+        int cap = Math.clamp(limit, 1, 1000);
         String listKey = keyPrefix + ":" + conversationId + ":messages";
         try (Jedis jedis = pool.getResource()) {
             // LRANGE returns oldest → newest; -cap to -1 captures the tail.
@@ -103,16 +108,9 @@ public class TurRedisChatMemoryStore implements TurChatMemoryStore {
             if (raw == null || raw.isEmpty()) return List.of();
             List<Map<String, Object>> result = new ArrayList<>(raw.size());
             for (String json : raw) {
-                try {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> parsed = MAPPER.readValue(json, Map.class);
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("role", String.valueOf(parsed.get("role")));
-                    row.put("content", String.valueOf(parsed.getOrDefault("content", "")));
-                    row.put("timestamp", parsed.get("timestamp"));
+                Map<String, Object> row = parseMemoryEntry(json, listKey);
+                if (row != null) {
                     result.add(row);
-                } catch (Exception parseEx) {
-                    log.debug("Skipping malformed memory entry in {}: {}", listKey, parseEx.getMessage());
                 }
             }
             return result;
@@ -123,11 +121,31 @@ public class TurRedisChatMemoryStore implements TurChatMemoryStore {
         }
     }
 
+    /**
+     * Parses one stored memory entry into a row, or returns {@code null} when the
+     * JSON is malformed (logged and skipped by the caller).
+     */
+    @SuppressWarnings("java:S1168") // null is a skip-this-entry sentinel; the caller drops nulls, an empty map would add a blank row.
+    private Map<String, Object> parseMemoryEntry(String json, String listKey) {
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> parsed = MAPPER.readValue(json, Map.class);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("role", String.valueOf(parsed.get("role")));
+            row.put(CONTENT, String.valueOf(parsed.getOrDefault(CONTENT, "")));
+            row.put(TIMESTAMP, parsed.get(TIMESTAMP));
+            return row;
+        } catch (Exception parseEx) {
+            log.debug("Skipping malformed memory entry in {}: {}", listKey, parseEx.getMessage());
+            return null;
+        }
+    }
+
     private static String serialize(String role, String content, String ts) {
         Map<String, String> doc = new HashMap<>();
         doc.put("role", role);
-        doc.put("content", content == null ? "" : content);
-        doc.put("timestamp", ts);
+        doc.put(CONTENT, content == null ? "" : content);
+        doc.put(TIMESTAMP, ts);
         try {
             return MAPPER.writeValueAsString(doc);
         } catch (Exception e) {

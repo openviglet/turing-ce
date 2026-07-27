@@ -73,8 +73,9 @@ class TurAnalyticsIntentIndexerTest {
     void indexNameStripsDashesAndCapsTo12Chars() {
         String name = TurAnalyticsIntentIndexer.indexNameFor("ab12cd34-aaaa-bbbb-cccc-ddddeeeeffff");
 
-        assertThat(name).isEqualTo("intent_ab12cd34aaaa");
-        assertThat(name).startsWith("intent_");
+        assertThat(name)
+                .isEqualTo("intent_ab12cd34aaaa")
+                .startsWith("intent_");
     }
 
     @Test
@@ -97,10 +98,11 @@ class TurAnalyticsIntentIndexerTest {
         verify(plugin).indexStandaloneDocument(eq(seInstance), eq("intent_agent1"),
                 docCaptor.capture());
         Map<String, Object> doc = docCaptor.getValue();
-        assertThat(doc.get("id")).isEqualTo("intent-1");
-        assertThat(doc.get("agentId")).isEqualTo("agent-1");
-        assertThat(doc.get("label")).isEqualTo("Refund request");
-        assertThat(doc.get("samples")).isEqualTo("refund money back");
+        assertThat(doc)
+                .containsEntry("id", "intent-1")
+                .containsEntry("agentId", "agent-1")
+                .containsEntry("label", "Refund request")
+                .containsEntry("samples", "refund money back");
         verify(plugin).commitStandalone(seInstance, "intent_agent1");
     }
 
@@ -179,7 +181,6 @@ class TurAnalyticsIntentIndexerTest {
     @Test
     void perAgentBindingWinsOverConfiguredProperty() {
         TurSEInstance agentBoundSe = mockSeInstance("agent-bound");
-        TurSEInstance configuredSe = mockSeInstance("configured");
         TurAIAgent agent = new TurAIAgent();
         agent.setId("agent-1");
         agent.setAnalyticsSeInstance(agentBoundSe);

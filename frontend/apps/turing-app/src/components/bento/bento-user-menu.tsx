@@ -8,8 +8,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ROUTES } from "@/app/routes.const";
+import { useFeatures } from "@/api/queries/features.queries";
 import { useCurrentUser } from "@/contexts/user.context";
-import { IconLogout, IconUserCircle } from "@tabler/icons-react";
+import { IconBuildingCommunity, IconBuildingSkyscraper, IconKeyboard, IconLogout, IconSparkles, IconUserCircle } from "@tabler/icons-react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { UserAvatar } from "@viglet/viglet-design-system";
@@ -22,10 +23,20 @@ import { UserAvatar } from "@viglet/viglet-design-system";
  * (`.bento-dropdown-item`) carry the frosted-glass look and iOS spring
  * easing so it feels like part of the bento language.
  */
-export function BentoUserMenu() {
+export interface BentoUserMenuProps {
+  /** Open the keyboard-shortcut guide (T572). Omit to hide the entry. */
+  onOpenShortcuts?: () => void;
+  /** Replay the first-run tour (T572). Omit to hide the entry. */
+  onReplayTour?: () => void;
+}
+
+export function BentoUserMenu({ onOpenShortcuts, onReplayTour }: Readonly<BentoUserMenuProps> = {}) {
   const { user } = useCurrentUser();
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const { data: features } = useFeatures();
+  const tenancyEnabled = features?.tenancyEnabled === true;
+  const platformAdmin = features?.platformAdmin === true;
 
   const fullName =
     `${user.firstName ?? ""} ${user.lastName ?? ""}`.trim() ||
@@ -85,13 +96,57 @@ export function BentoUserMenu() {
 
         <DropdownMenuGroup>
           <DropdownMenuItem
-            onSelect={() => navigate(ROUTES.USER_ACCOUNT)}
+            onSelect={() => navigate(ROUTES.BENTO_USER_ACCOUNT)}
             className="bento-dropdown-item cursor-pointer gap-2 px-3 py-2"
           >
             <IconUserCircle size={18} />
             {t("nav.account")}
           </DropdownMenuItem>
+          {tenancyEnabled && (
+            <DropdownMenuItem
+              onSelect={() => navigate(ROUTES.BENTO_TENANT_SETTINGS)}
+              className="bento-dropdown-item cursor-pointer gap-2 px-3 py-2"
+            >
+              <IconBuildingCommunity size={18} />
+              {t("nav.organizations", { defaultValue: "Organizations" })}
+            </DropdownMenuItem>
+          )}
+          {tenancyEnabled && platformAdmin && (
+            <DropdownMenuItem
+              onSelect={() => navigate(ROUTES.BENTO_TENANT_ADMIN)}
+              className="bento-dropdown-item cursor-pointer gap-2 px-3 py-2"
+            >
+              <IconBuildingSkyscraper size={18} />
+              {t("nav.tenantAdmin", { defaultValue: "Tenant administration" })}
+            </DropdownMenuItem>
+          )}
         </DropdownMenuGroup>
+
+        {(onOpenShortcuts || onReplayTour) && (
+          <>
+            <DropdownMenuSeparator className="my-1.5 bg-border/50" />
+            <DropdownMenuGroup>
+              {onReplayTour && (
+                <DropdownMenuItem
+                  onSelect={() => onReplayTour()}
+                  className="bento-dropdown-item cursor-pointer gap-2 px-3 py-2"
+                >
+                  <IconSparkles size={18} />
+                  {t("bento.tour.replay", { defaultValue: "Take the tour" })}
+                </DropdownMenuItem>
+              )}
+              {onOpenShortcuts && (
+                <DropdownMenuItem
+                  onSelect={() => onOpenShortcuts()}
+                  className="bento-dropdown-item cursor-pointer gap-2 px-3 py-2"
+                >
+                  <IconKeyboard size={18} />
+                  {t("bento.shortcuts.title", { defaultValue: "Keyboard shortcuts" })}
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuGroup>
+          </>
+        )}
 
         <DropdownMenuSeparator className="my-1.5 bg-border/50" />
 

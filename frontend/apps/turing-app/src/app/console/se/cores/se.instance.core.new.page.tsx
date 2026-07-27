@@ -1,4 +1,5 @@
 import { ROUTES } from "@/app/routes.const";
+import { BentoFormHero } from "@/components/bento";
 import { LanguageSelect } from "@/components/language-select";
 import { StickyPageHeader } from "@/components/sticky-page-header";
 import {
@@ -43,15 +44,27 @@ function buildCoreName(name: string, locale: string, appendLocale: boolean): str
   return `${trimmed}_${locale}`;
 }
 
-export default function SEInstanceCoreNewPage() {
+interface SEInstanceCoreNewPageProps {
+  /**
+   * Render inside the bento shell — the `StickyPageHeader` is replaced by a
+   * {@link BentoFormHero} (hero → sticky-save-bar morph + `←` breadcrumb) and
+   * the frosted body comes from the enclosing `SectionCardChromeProvider`.
+   */
+  chrome?: "console" | "bento";
+  /** Route base for cores navigation; defaults to the console SE instance route. */
+  baseRoute?: string;
+}
+
+export default function SEInstanceCoreNewPage({ chrome = "console", baseRoute = ROUTES.SE_INSTANCE }: Readonly<SEInstanceCoreNewPageProps>) {
   const { t } = useTranslation();
   const { id } = useParams() as { id: string };
   const navigate = useNavigate();
   const [locales, setLocales] = useState<TurLocale[]>([]);
   const [appendLocale, setAppendLocale] = useState(true);
   const createCoreMutation = useCreateSeCore();
+  const coresRoute = `${baseRoute}/${id}/cores`;
   useSubPageBreadcrumb([
-    { label: t("se.cores.title"), href: `${ROUTES.SE_INSTANCE}/${id}/cores` },
+    { label: t("se.cores.title"), href: coresRoute },
     { label: t("se.newCore.title") },
   ]);
 
@@ -76,7 +89,7 @@ export default function SEInstanceCoreNewPage() {
     try {
       await createCoreMutation.mutateAsync({ seId: id, name: coreName, locale: data.locale });
       toast.success(t("se.newCore.createSuccess", { name: coreName }));
-      navigate(`${ROUTES.SE_INSTANCE}/${id}/cores`);
+      navigate(coresRoute);
     } catch (error) {
       console.error("Failed to create core", error);
       const msg = error instanceof Error ? error.message : "Unknown error";
@@ -84,26 +97,49 @@ export default function SEInstanceCoreNewPage() {
     }
   }
 
+  const actions = (
+    <>
+      <GradientButton type="submit" size="sm">
+        <IconDeviceFloppy className="size-4" />
+        {t("forms.formActions.saveChanges")}
+      </GradientButton>
+      <GradientButton type="button" variant="outline" size="sm" onClick={() => navigate(coresRoute)}>
+        <IconX className="size-4" />
+        {t("forms.formActions.cancel")}
+      </GradientButton>
+    </>
+  );
+
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4 px-4 lg:px-6 pb-8">
-        <StickyPageHeader>
-          <StickyPageHeader.Title
-            icon={IconDatabase}
-            feature={t("se.cores.title")}
-            description={t("se.newCore.description")}
+      <form onSubmit={form.handleSubmit(onSubmit)} className={chrome === "bento" ? "space-y-4 md:space-y-5 pb-8" : "space-y-4 px-4 lg:px-6 pb-8"}>
+        {chrome === "bento" ? (
+          <BentoFormHero
+            backTo={coresRoute}
+            backLabel={t("se.cores.title")}
+            leading={
+              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-linear-to-br from-emerald-500 to-teal-600 text-white shadow-md">
+                <IconDatabase size={24} />
+              </span>
+            }
+            title={t("se.newCore.title")}
+            subtitle={t("se.newCore.description")}
+            onCancel={() => navigate(coresRoute)}
+            loading={createCoreMutation.isPending}
+            dirty={form.formState.isDirty}
+            titleMissing={!finalCoreName}
+            stickyTitle={t("se.newCore.title")}
           />
-          <StickyPageHeader.Actions>
-            <GradientButton type="submit" size="sm">
-              <IconDeviceFloppy className="size-4" />
-              {t("forms.formActions.saveChanges")}
-            </GradientButton>
-            <GradientButton type="button" variant="outline" size="sm" onClick={() => navigate(`${ROUTES.SE_INSTANCE}/${id}/cores`)}>
-              <IconX className="size-4" />
-              {t("forms.formActions.cancel")}
-            </GradientButton>
-          </StickyPageHeader.Actions>
-        </StickyPageHeader>
+        ) : (
+          <StickyPageHeader>
+            <StickyPageHeader.Title
+              icon={IconDatabase}
+              feature={t("se.cores.title")}
+              description={t("se.newCore.description")}
+            />
+            <StickyPageHeader.Actions>{actions}</StickyPageHeader.Actions>
+          </StickyPageHeader>
+        )}
           <SectionCard variant="blue">
             <SectionCard.Header
               icon={IconInfoCircle}

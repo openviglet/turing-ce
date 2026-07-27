@@ -108,18 +108,19 @@ class TurHttpRerankClientTest {
                 List.of("doc one", "doc two"), 7);
 
         String body = lastBody.get();
-        assertThat(body).contains("\"query\":\"my question\"");
-        assertThat(body).contains("\"top_n\":7");
-        assertThat(body).contains("\"model\":\"bge-reranker\"");
-        assertThat(body).contains("doc one").contains("doc two");
+        assertThat(body)
+                .contains("\"query\":\"my question\"")
+                .contains("\"top_n\":7")
+                .contains("\"model\":\"bge-reranker\"")
+                .contains("doc one").contains("doc two");
     }
 
     @Test
     void throwsOnNon2xxStatus() throws IOException {
         stub(500, "boom");
 
-        assertThatThrownBy(() -> client.rankIndices(endpoint, null, null, "q",
-                List.of("a", "b"), 2))
+        var indices = List.of("a", "b");
+        assertThatThrownBy(() -> client.rankIndices(endpoint, null, null, "q", indices, 2))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("500");
     }

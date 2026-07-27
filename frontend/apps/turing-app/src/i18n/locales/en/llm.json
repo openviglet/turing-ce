@@ -4,6 +4,31 @@
     "blankTitle": "You don't seem to have any language model instance.",
     "blankDescription": "Create a new instance and use it in semantic navigation and chatbot.",
     "newInstance": "New language model instance",
-    "newLanguageModel": "New Language Model"
+    "newLanguageModel": "New Language Model",
+    "deprecation": {
+      "title": "Deprecated models in use",
+      "description": "The public model catalog marks these configured models as deprecated or retired. Switch to the suggested replacement to avoid runtime failures.",
+      "item": "{{instance}} uses {{model}}",
+      "suggested": "suggested: {{model}}",
+      "noReplacement": "no direct replacement found — review manually",
+      "retired": "retired",
+      "deprecated": "deprecated"
+    },
+    "changeFeed": {
+      "title": "Catalog changes to your models",
+      "description": "The public model catalog changed since the last snapshot. These updates affect models you have configured.",
+      "replacedBy": "possible replacement: {{models}}",
+      "type": {
+        "REMOVED": "removed",
+        "SUPERSEDED": "superseded",
+        "CHANGED": "changed"
+      }
+    },
+    "sidebar": {
+      "general": "General",
+      "model": "Model Settings",
+      "generation": "Generation Parameters",
+      "capabilities": "Native Capabilities"
+    }
   }
 }

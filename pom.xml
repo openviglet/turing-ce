@@ -35,32 +35,39 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-        <spring-boot.version>4.0.6</spring-boot.version>
+        <!-- Empty default so failsafe's argLine is a no-op unless the jacoco
+             `coverage` profile (active by default) overrides it via
+             prepare-agent-integration. -->
+        <failsafeArgLine></failsafeArgLine>
+        <spring-boot.version>4.1.0</spring-boot.version>
+        <!-- viglet-core is now an external project (github.com/openviglet/viglet-core),
+             published to GitHub Packages and versioned independently from Turing. -->
+        <viglet-core.version>2026.3.10</viglet-core.version>
         <sonar.organization>viglet</sonar.organization>
         <sonar.host.url>https://sonarcloud.io</sonar.host.url>
         <maven.deploy.skip>true</maven.deploy.skip>
         <gpg.keyname>30AA85DC937DA16691466FE2A0CCF43371503F2D</gpg.keyname>
         <gpg.passphrase>${env.GPG_PASSPHRASE}</gpg.passphrase>
         <!-- Versions not managed by Spring Boot BOM -->
-        <elasticsearch.version>9.4.2</elasticsearch.version>
+        <elasticsearch.version>9.4.3</elasticsearch.version>
         <imageio.version>1.4.0</imageio.version>
-        <lucene.version>10.4.0</lucene.version>
+        <lucene.version>10.5.0</lucene.version>
         <mapstruct.version>1.6.3</mapstruct.version>
-        <minio.version>9.0.1</minio.version>
-        <mongodb.version>5.8.0</mongodb.version>
+        <minio.version>9.0.3</minio.version>
+        <mongodb.version>5.9.0</mongodb.version>
         <okhttp.version>5.4.0</okhttp.version>
         <resilience4j.version>2.4.0</resilience4j.version>
         <shedlock.version>7.7.0</shedlock.version>
         <testcontainers.version>2.0.5</testcontainers.version>
         <tika.version>3.3.1</tika.version>
-        <jgit.version>7.6.0.202603022253-r</jgit.version>
+        <jgit.version>7.7.0.202606012155-r</jgit.version>
     </properties>
     <build>
         <plugins>
             <plugin>
                 <groupId>org.sonatype.central</groupId>
                 <artifactId>central-publishing-maven-plugin</artifactId>
-                <version>0.10.0</version>
+                <version>0.11.0</version>
                 <extensions>true</extensions>
                 <configuration>
                     <publishingServerId>central</publishingServerId>
@@ -203,7 +210,7 @@
                     <plugin>
                         <groupId>com.github.eirslett</groupId>
                         <artifactId>frontend-maven-plugin</artifactId>
-                        <version>2.0.0</version>
+                        <version>2.0.1</version>
                         <executions>
                             <execution>
                                 <id>install-node-and-npm-react-sdk</id>
@@ -238,8 +245,8 @@
                             </execution>
                         </executions>
                         <configuration>
-                            <nodeVersion>v24.12.0</nodeVersion>
-                            <npmVersion>11.5.2</npmVersion>
+                            <nodeVersion>v26.3.1</nodeVersion>
+                            <npmVersion>11.17.0</npmVersion>
                         </configuration>
                     </plugin>
 
@@ -257,18 +264,66 @@
                         <groupId>org.jacoco</groupId>
                         <artifactId>jacoco-maven-plugin</artifactId>
                         <executions>
+                            <!-- Surefire (unit) agent → target/jacoco.exec -->
                             <execution>
                                 <id>prepare-agent</id>
                                 <goals>
                                     <goal>prepare-agent</goal>
                                 </goals>
                             </execution>
+                            <!-- Failsafe (integration) agent → target/jacoco-it.exec.
+                                 Sets the failsafeArgLine property the failsafe
+                                 plugin is wired to use (see turing-app/pom.xml). -->
                             <execution>
-                                <id>report</id>
+                                <id>prepare-agent-integration</id>
+                                <goals>
+                                    <goal>prepare-agent-integration</goal>
+                                </goals>
+                                <configuration>
+                                    <!-- Expose the IT agent under its own property so it
+                                         doesn't clobber surefire's `argLine`; failsafe
+                                         consumes it via @{failsafeArgLine}. -->
+                                    <propertyName>failsafeArgLine</propertyName>
+                                </configuration>
+                            </execution>
+                            <!-- Unit-only report so `mvn test` alone still emits coverage. -->
+                            <execution>
+                                <id>report-unit</id>
                                 <phase>test</phase>
                                 <goals>
                                     <goal>report</goal>
                                 </goals>
+                            </execution>
+                            <!-- Merge unit + integration exec data, then report at
+                                 verify so `mvn verify` coverage spans both. -->
+                            <execution>
+                                <id>merge-exec</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>merge</goal>
+                                </goals>
+                                <configuration>
+                                    <fileSets>
+                                        <fileSet>
+                                            <directory>${project.build.directory}</directory>
+                                            <includes>
+                                                <include>jacoco.exec</include>
+                                                <include>jacoco-it.exec</include>
+                                            </includes>
+                                        </fileSet>
+                                    </fileSets>
+                                    <destFile>${project.build.directory}/jacoco-merged.exec</destFile>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>report</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>report</goal>
+                                </goals>
+                                <configuration>
+                                    <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+                                </configuration>
                             </execution>
                         </executions>
                     </plugin>
@@ -299,7 +354,15 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-            <!-- Internal modules -->
+            <!-- viglet-core — external project (github.com/openviglet/viglet-core),
+                 published to GitHub Packages. The BOM pins every module version. -->
+            <dependency>
+                <groupId>com.viglet.core</groupId>
+                <artifactId>viglet-core-bom</artifactId>
+                <version>${viglet-core.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
             <dependency>
                 <groupId>com.viglet.turing</groupId>
                 <artifactId>turing-java-sdk</artifactId>
@@ -324,7 +387,7 @@
             <dependency>
                 <groupId>org.apache.logging.log4j</groupId>
                 <artifactId>log4j-core</artifactId>
-                <version>2.26.0</version>
+                <version>2.26.1</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.commons</groupId>
@@ -359,13 +422,13 @@
             <dependency>
                 <groupId>redis.clients</groupId>
                 <artifactId>jedis</artifactId>
-                <version>7.5.2</version>
+                <version>7.5.3</version>
             </dependency>
             <!-- Not in Spring Boot BOM -->
             <dependency>
                 <groupId>org.json</groupId>
                 <artifactId>json</artifactId>
-                <version>20260522</version>
+                <version>20260719</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.commons</groupId>
@@ -415,7 +478,7 @@
             <dependency>
                 <groupId>org.springframework.statemachine</groupId>
                 <artifactId>spring-statemachine-core</artifactId>
-                <version>4.0.1</version>
+                <version>4.0.2</version>
             </dependency>
             <dependency>
                 <groupId>com.graphql-java</groupId>
@@ -425,13 +488,13 @@
             <dependency>
                 <groupId>com.itextpdf</groupId>
                 <artifactId>itext-core</artifactId>
-                <version>9.6.0</version>
+                <version>9.7.0</version>
                 <type>pom</type>
             </dependency>
             <dependency>
                 <groupId>com.itextpdf</groupId>
                 <artifactId>cleanup</artifactId>
-                <version>5.0.6</version>
+                <version>5.0.7</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.commons</groupId>
@@ -532,6 +595,11 @@
             <dependency>
                 <groupId>org.apache.lucene</groupId>
                 <artifactId>lucene-memory</artifactId>
+                <version>${lucene.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.lucene</groupId>
+                <artifactId>lucene-suggest</artifactId>
                 <version>${lucene.version}</version>
             </dependency>
             <dependency>

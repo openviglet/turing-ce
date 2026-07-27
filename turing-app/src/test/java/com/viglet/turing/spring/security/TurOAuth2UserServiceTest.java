@@ -11,6 +11,8 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import com.viglet.turing.properties.TurConfigProperties;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -32,6 +34,10 @@ import org.springframework.security.oauth2.core.user.OAuth2User;
  */
 @ExtendWith(MockitoExtension.class)
 class TurOAuth2UserServiceTest {
+    // Fixed token timestamps — the user service reads claims only; it never
+    // validates expiry against the clock, so a literal keeps these deterministic.
+    private static final Instant FIXED_NOW = Instant.parse("2026-06-15T12:00:00Z");
+
 
     @Mock
     private TurAuthorityResolver turAuthorityResolver;
@@ -162,7 +168,7 @@ class TurOAuth2UserServiceTest {
     }
 
     private TurOAuth2UserService createTestServiceWithBaseUser(OAuth2User baseUser) {
-        return new TurOAuth2UserService(turAuthorityResolver) {
+        return new TurOAuth2UserService(turAuthorityResolver, new TurConfigProperties()) {
             @Override
             public OAuth2User loadUser(OAuth2UserRequest userRequest) {
                 Set<GrantedAuthority> authorities = new HashSet<>(baseUser.getAuthorities());
@@ -190,8 +196,8 @@ class TurOAuth2UserServiceTest {
         OAuth2AccessToken accessToken = new OAuth2AccessToken(
                 OAuth2AccessToken.TokenType.BEARER,
                 "test-token",
-                Instant.now(),
-                Instant.now().plusSeconds(3600));
+                FIXED_NOW,
+                FIXED_NOW.plusSeconds(3600));
 
         return new OAuth2UserRequest(registration, accessToken);
     }

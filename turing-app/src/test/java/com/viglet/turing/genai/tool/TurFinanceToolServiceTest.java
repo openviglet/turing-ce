@@ -76,7 +76,10 @@ class TurFinanceToolServiceTest {
     @CsvSource({
             "1500000000, '1[.,]5B'",
             "2500000, '2[.,]5M'",
-            "50000, '50[.,]0K'"
+            "50000, '50[.,]0K'",
+            "1000000000, '1[.,]0B'",
+            "1000000, '1[.,]0M'",
+            "1000, '1[.,]0K'"
     })
     void shouldFormatVolume(long value, String expectedPattern) throws Exception {
         Method method = TurFinanceToolService.class.getDeclaredMethod("formatVolume", long.class);
@@ -408,20 +411,6 @@ class TurFinanceToolServiceTest {
                 .contains("Current Quote");
     }
 
-    @ParameterizedTest
-    @CsvSource({
-            "1000000000, '1[.,]0B'",
-            "1000000, '1[.,]0M'",
-            "1000, '1[.,]0K'"
-    })
-    void shouldFormatVolumeAtBoundaries(long value, String expectedPattern) throws Exception {
-        Method method = TurFinanceToolService.class.getDeclaredMethod("formatVolume", long.class);
-        method.setAccessible(true);
-
-        String result = (String) method.invoke(service, value);
-        assertThat(result).matches(expectedPattern);
-    }
-
     @Test
     void shouldAppendHistoryRow() throws Exception {
         Method method = TurFinanceToolService.class.getDeclaredMethod("appendHistoryRow",
@@ -577,9 +566,10 @@ class TurFinanceToolServiceTest {
         method.invoke(service, sb, result, "1mo");
 
         String output = sb.toString();
-        assertThat(output).contains("Price History (1mo)");
-        // Should have at most 15 data rows (limited from 20) plus header lines
-        assertThat(output).isNotEmpty();
+        assertThat(output)
+                .contains("Price History (1mo)")
+                // Should have at most 15 data rows (limited from 20) plus header lines
+                .isNotEmpty();
     }
 
     @Test

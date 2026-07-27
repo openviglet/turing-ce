@@ -63,6 +63,10 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 @Component
 public class TurElasticsearch {
+
+    // --- S1192: extracted duplicated literals ---
+    private static final String INDEX_NOT_FOUND_EXCEPTION = "index_not_found_exception";
+
     private static final String FACET_AGG_PREFIX = "facet_";
 
     private final TurSNSiteRepository turSNSiteRepository;
@@ -221,7 +225,7 @@ public class TurElasticsearch {
         try {
             return instance.getClient().count(c -> c.index(instance.getIndex())).count();
         } catch (co.elastic.clients.elasticsearch._types.ElasticsearchException e) {
-            if ("index_not_found_exception".equals(e.error().type())) {
+            if (INDEX_NOT_FOUND_EXCEPTION.equals(e.error().type())) {
                 log.debug("Index '{}' not found, returning 0 documents", instance.getIndex());
             } else {
                 log.error("Error getting document count from Elasticsearch index '{}'", instance.getIndex(), e);
@@ -230,6 +234,58 @@ public class TurElasticsearch {
         } catch (IOException e) {
             log.error("Error getting document count from Elasticsearch index '{}'", instance.getIndex(), e);
             return 0L;
+        }
+    }
+
+    /**
+     * T388 — counts documents that populate {@code fieldName} via an
+     * Elasticsearch {@code exists} query. Returns {@code -1} on error so
+     * coverage callers can treat it as "unknown".
+     */
+    public long getDocumentTotalWithField(TurElasticsearchInstance instance, String fieldName) {
+        try {
+            return instance.getClient().count(c -> c.index(instance.getIndex())
+                    .query(q -> q.exists(e -> e.field(fieldName)))).count();
+        } catch (co.elastic.clients.elasticsearch._types.ElasticsearchException e) {
+            if (INDEX_NOT_FOUND_EXCEPTION.equals(e.error().type())) {
+                log.debug("Index '{}' not found, returning -1 for field '{}'",
+                        instance.getIndex(), fieldName);
+            } else {
+                log.error("Error counting field '{}' in Elasticsearch index '{}'",
+                        fieldName, instance.getIndex(), e);
+            }
+            return -1L;
+        } catch (IOException e) {
+            log.error("Error counting field '{}' in Elasticsearch index '{}'",
+                    fieldName, instance.getIndex(), e);
+            return -1L;
+        }
+    }
+
+    /**
+     * T472 — counts documents whose numeric {@code fieldName} value is strictly
+     * below {@code threshold} via an Elasticsearch {@code range lt} query.
+     * Returns {@code -1} on error so coverage callers can treat it as "unknown".
+     */
+    public long getDocumentTotalWithFieldBelow(TurElasticsearchInstance instance, String fieldName,
+            int threshold) {
+        try {
+            return instance.getClient().count(c -> c.index(instance.getIndex())
+                    .query(q -> q.range(r -> r.untyped(u -> u.field(fieldName)
+                            .lt(co.elastic.clients.json.JsonData.of(threshold)))))).count();
+        } catch (co.elastic.clients.elasticsearch._types.ElasticsearchException e) {
+            if (INDEX_NOT_FOUND_EXCEPTION.equals(e.error().type())) {
+                log.debug("Index '{}' not found, returning -1 for field '{}' range",
+                        instance.getIndex(), fieldName);
+            } else {
+                log.error("Error range-counting field '{}' in Elasticsearch index '{}'",
+                        fieldName, instance.getIndex(), e);
+            }
+            return -1L;
+        } catch (IOException e) {
+            log.error("Error range-counting field '{}' in Elasticsearch index '{}'",
+                    fieldName, instance.getIndex(), e);
+            return -1L;
         }
     }
 
@@ -306,7 +362,7 @@ public class TurElasticsearch {
 
     private void handleElasticsearchException(co.elastic.clients.elasticsearch._types.ElasticsearchException e,
             String index) {
-        if ("index_not_found_exception".equals(e.error().type())) {
+        if (INDEX_NOT_FOUND_EXCEPTION.equals(e.error().type())) {
             log.debug("Index '{}' not found, returning empty results", index);
         } else {
             var err = e.error();

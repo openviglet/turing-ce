@@ -1,6 +1,7 @@
 package com.viglet.turing.api.integration;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -34,6 +35,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.viglet.turing.persistence.mapper.integration.TurIntegrationInstanceMapper;
 import com.viglet.turing.persistence.model.integration.TurIntegrationInstance;
 import com.viglet.turing.persistence.repository.integration.TurIntegrationInstanceRepository;
+import com.viglet.turing.tenant.TurInfraTenantScope;
 
 @ExtendWith(MockitoExtension.class)
 class TurIntegrationInstanceAPITest {
@@ -47,6 +49,9 @@ class TurIntegrationInstanceAPITest {
     private TurIntegrationInstanceMapper turIntegrationInstanceMapper = Mappers
             .getMapper(TurIntegrationInstanceMapper.class);
 
+    @Mock
+    private TurInfraTenantScope tenantScope;
+
     @InjectMocks
     private TurIntegrationInstanceAPI turIntegrationInstanceAPI;
 
@@ -54,6 +59,11 @@ class TurIntegrationInstanceAPITest {
 
     @BeforeEach
     void setUp() {
+        // Tenancy-off passthrough: list calls the unscoped supplier, create is a no-op.
+        lenient().when(tenantScope.visibleList(any(), any()))
+                .thenAnswer(inv -> ((java.util.function.Supplier<?>) inv.getArgument(0)).get());
+        lenient().when(tenantScope.stampOnCreate(any())).thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(tenantScope.isVisibleToTenant(any())).thenReturn(true);
         mockMvc = MockMvcBuilders.standaloneSetup(turIntegrationInstanceAPI).build();
     }
 
@@ -160,6 +170,11 @@ class TurIntegrationInstanceAPITest {
 
     @Test
     void testTurIntegrationInstanceDelete() throws Exception {
+        // T365 — delete only runs for a visible instance, so the by-id load must resolve.
+        TurIntegrationInstance instance = new TurIntegrationInstance();
+        instance.setId("1");
+        when(turIntegrationInstanceRepository.findById("1")).thenReturn(Optional.of(instance));
+
         mockMvc.perform(delete("/api/integration/1"))
                 .andExpect(status().isOk())
                 .andExpect(content().string("true"));

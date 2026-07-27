@@ -25,7 +25,7 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.MapAccessor;
-import org.springframework.expression.spel.support.StandardEvaluationContext;
+import org.springframework.expression.spel.support.SimpleEvaluationContext;
 
 import com.viglet.turing.genai.flow.ChatFlowEdge;
 import com.viglet.turing.genai.flow.ChatFlowGraph;
@@ -50,6 +50,10 @@ import tools.jackson.databind.ObjectMapper;
 @Slf4j
 public final class ChatFlowOps {
 
+    // --- S1192: extracted duplicated literals ---
+    private static final String SWITCH = "switch";
+
+
     /**
      * Synthetic node id stamped onto state when the user abandons a flow
      * that has no real end node. Surfaced by the History page as
@@ -64,7 +68,7 @@ public final class ChatFlowOps {
     /** Validation patterns understood by node {@code validationRule} fields. */
     private static final Map<String, Pattern> VALIDATION_PATTERNS = Map.ofEntries(
             Map.entry("email", Pattern.compile("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b")),
-            Map.entry("phone", Pattern.compile("\\+?[0-9][0-9 ()\\-]{6,}\\b")),
+            Map.entry("phone", Pattern.compile("\\+?\\d[0-9 ()\\-]{6,}\\b")),
             Map.entry("url",   Pattern.compile("https?://[\\w.\\-/?#=&%+]+", Pattern.CASE_INSENSITIVE)),
             Map.entry("number",Pattern.compile("-?\\d+(?:[.,]\\d+)?")),
             Map.entry("date",  Pattern.compile("\\b\\d{1,4}[/-]\\d{1,2}[/-]\\d{1,4}\\b")),
@@ -142,12 +146,11 @@ public final class ChatFlowOps {
                 continue;
             }
             String name = field.name();
-            if (name == null || name.isBlank()) {
-                continue;
-            }
-            String value = vars.get(name.trim());
-            if (value == null || value.isBlank()) {
-                return false;
+            if (name != null && !name.isBlank()) {
+                String value = vars.get(name.trim());
+                if (value == null || value.isBlank()) {
+                    return false;
+                }
             }
         }
         return true;
@@ -213,9 +216,12 @@ public final class ChatFlowOps {
             return "";
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("\n\n=== ACTIVE FLOW STEP: ")
-                .append(safe(node.label()))
-                .append(" ===\n");
+        // Markdown H2 (not `=== … ===` decoration): a salient section delimiter
+        // that renders as a proper heading in the Live Preview. The node's own
+        // label is intentionally NOT emitted — behavior is driven entirely by
+        // the Goal below, and the Hard rules explicitly tell the model to ignore
+        // persona/role framing, so the label is pure token cost.
+        sb.append("\n\n## ACTIVE FLOW STEP\n");
         if (node.aiInstruction() != null && !node.aiInstruction().isBlank()) {
             sb.append("Goal: ").append(node.aiInstruction().trim()).append('\n');
         }
@@ -291,23 +297,21 @@ public final class ChatFlowOps {
      * same truncation treatment.
      */
     private static String summarizeVariables(Map<String, String> variables) {
-        LinkedHashMap<String, String> rendered = new LinkedHashMap<>(variables.size());
+        LinkedHashMap<String, String> rendered = LinkedHashMap.newLinkedHashMap(variables.size());
         for (Map.Entry<String, String> entry : variables.entrySet()) {
             String value = entry.getValue();
             if (value == null) {
                 rendered.put(entry.getKey(), "");
-                continue;
-            }
-            if (value.length() <= MAX_INLINED_VARIABLE_LENGTH) {
+            } else if (value.length() <= MAX_INLINED_VARIABLE_LENGTH) {
                 rendered.put(entry.getKey(), value);
-                continue;
+            } else {
+                String trimmed = value.trim();
+                boolean json = trimmed.startsWith("{") || trimmed.startsWith("[");
+                String marker = json
+                        ? "(json, " + value.length() + " chars — content managed by UI/tool, do not quote)"
+                        : "(text, " + value.length() + " chars — truncated, do not quote)";
+                rendered.put(entry.getKey(), marker);
             }
-            String trimmed = value.trim();
-            boolean json = trimmed.startsWith("{") || trimmed.startsWith("[");
-            String marker = json
-                    ? "(json, " + value.length() + " chars — content managed by UI/tool, do not quote)"
-                    : "(text, " + value.length() + " chars — truncated, do not quote)";
-            rendered.put(entry.getKey(), marker);
         }
         return rendered.toString();
     }
@@ -349,7 +353,7 @@ public final class ChatFlowOps {
             appendConditionalNextSteps(sb, graph, target);
             return;
         }
-        if ("switch".equals(type)) {
+        if (SWITCH.equals(type)) {
             appendSwitchNextSteps(sb, graph, target);
             return;
         }
@@ -361,48 +365,65 @@ public final class ChatFlowOps {
                 .append("\n");
     }
 
-    /**
-     * For switch targets, expands each option's downstream so the bot knows what to ask after the
-     * user's answer routes the flow. Handles are option ids (semantically opaque), so we look up
-     * each edge's matching {@code SwitchOption} on the source node and surface the human-readable
-     * label instead — that's what the model can sensibly reason about when chaining.
-     */
-    private static void appendSwitchNextSteps(StringBuilder sb, ChatFlowGraph graph, ChatFlowNode switchNode) {
-        List<ChatFlowEdge> branches = graph.outgoingEdges(switchNode.id());
-        if (branches.isEmpty()) {
-            return;
-        }
+    /** Maps each switch option's handle id to its display label. */
+    private static Map<String, String> buildSwitchLabels(ChatFlowNode switchNode) {
         Map<String, String> labelByHandle = new LinkedHashMap<>();
         for (ChatFlowNode.SwitchOption option : switchNode.switchOptions()) {
             if (option != null && option.id() != null && option.label() != null) {
                 labelByHandle.put(option.id(), option.label());
             }
         }
+        return labelByHandle;
+    }
+
+    /**
+     * Builds the per-branch "if X branch: <instruction>" hint lines for a switch
+     * node, skipping end/empty-instruction branches. Returns "" when none apply.
+     */
+    private static String buildSwitchBranchHints(List<ChatFlowEdge> branches, ChatFlowGraph graph,
+            Map<String, String> labelByHandle) {
         StringBuilder hint = new StringBuilder();
-        boolean any = false;
         for (ChatFlowEdge edge : branches) {
-            Optional<ChatFlowNode> branchOpt = graph.nodeById(edge.target());
-            if (branchOpt.isEmpty()) {
-                continue;
+            String line = branchHintLine(edge, graph, labelByHandle);
+            if (line != null) {
+                hint.append(line);
             }
-            ChatFlowNode branch = branchOpt.get();
-            if ("end".equals(branch.type())) {
-                continue;
-            }
-            String instruction = branch.aiInstruction();
-            if (instruction == null || instruction.isBlank()) {
-                continue;
-            }
-            String handle = edge.sourceHandle();
-            String label = handle == null ? null : labelByHandle.get(handle);
-            String displayBranch = label != null && !label.isBlank()
-                    ? label
-                    : handle == null || handle.isBlank() ? "default" : handle;
-            hint.append("  - If '").append(displayBranch).append("' branch: ")
-                    .append(instruction.trim()).append("\n");
-            any = true;
         }
-        if (!any) {
+        return hint.toString();
+    }
+
+    /** One "  - If 'X' branch: <instruction>" line, or null when the edge target is end/blank/missing. */
+    private static String branchHintLine(ChatFlowEdge edge, ChatFlowGraph graph,
+            Map<String, String> labelByHandle) {
+        Optional<ChatFlowNode> branchOpt = graph.nodeById(edge.target());
+        if (branchOpt.isEmpty()) {
+            return null;
+        }
+        ChatFlowNode branch = branchOpt.get();
+        if ("end".equals(branch.type())) {
+            return null;
+        }
+        String instruction = branch.aiInstruction();
+        if (instruction == null || instruction.isBlank()) {
+            return null;
+        }
+        String handle = edge.sourceHandle();
+        String label = handle == null ? null : labelByHandle.get(handle);
+        String fallbackBranch = handle == null || handle.isBlank() ? "default" : handle;
+        String displayBranch = label != null && !label.isBlank()
+                ? label
+                : fallbackBranch;
+        return "  - If '" + displayBranch + "' branch: " + instruction.trim() + "\n";
+    }
+
+    private static void appendSwitchNextSteps(StringBuilder sb, ChatFlowGraph graph, ChatFlowNode switchNode) {
+        List<ChatFlowEdge> branches = graph.outgoingEdges(switchNode.id());
+        if (branches.isEmpty()) {
+            return;
+        }
+        Map<String, String> labelByHandle = buildSwitchLabels(switchNode);
+        String hint = buildSwitchBranchHints(branches, graph, labelByHandle);
+        if (hint.isEmpty()) {
             return;
         }
         String varName = switchNode.switchVariable() == null || switchNode.switchVariable().isBlank()
@@ -434,19 +455,15 @@ public final class ChatFlowOps {
                 continue;
             }
             ChatFlowNode branch = branchOpt.get();
-            if ("end".equals(branch.type())) {
-                continue;
-            }
             String instruction = branch.aiInstruction();
-            if (instruction == null || instruction.isBlank()) {
-                continue;
+            if (!"end".equals(branch.type()) && instruction != null && !instruction.isBlank()) {
+                String handle = edge.sourceHandle() == null || edge.sourceHandle().isBlank()
+                        ? "default"
+                        : edge.sourceHandle();
+                hint.append("  - If '").append(handle).append("' branch: ")
+                        .append(instruction.trim()).append("\n");
+                any = true;
             }
-            String handle = edge.sourceHandle() == null || edge.sourceHandle().isBlank()
-                    ? "default"
-                    : edge.sourceHandle();
-            hint.append("  - If '").append(handle).append("' branch: ")
-                    .append(instruction.trim()).append("\n");
-            any = true;
         }
         if (!any) {
             return;
@@ -666,18 +683,33 @@ public final class ChatFlowOps {
     private static final int QUESTION_SKIP_WALK_MAX = 16;
 
     /**
-     * Walks the state past consecutive {@code aiQuestion} nodes whose
-     * {@code outputVariable} slot is already filled with a non-blank value
-     * in the flow's variables map — provided the node does NOT have
-     * {@code overrideExistingValue = true}.
-     *
-     * <p>The skip is a transparent transition: no LLM round-trip, no
-     * persisted advance signal. Used so a flow that re-enters a previously
-     * answered question (loop back from a condition, re-trigger, …) doesn't
-     * re-ask the user for data they already provided.
-     *
-     * @since 2026.2.7
+     * True when {@code current} is a question-like node whose answer is already
+     * captured (so the walker may skip it): not author-forced, and either a
+     * satisfied native form or a non-blank output slot.
      */
+    private static boolean isSkippableSatisfiedQuestion(ChatFlowNode current,
+            Map<String, String> variables) {
+        if (!isQuestionLike(current)) {
+            return false;
+        }
+        // Author opted in to always asking — never skip.
+        if (Boolean.TRUE.equals(current.overrideExistingValue())) {
+            return false;
+        }
+        // T107 — a native multi-field formCapture is satisfied (and thus
+        // skippable) when every required field's slot is filled; its own
+        // outputVariable is not what advances it.
+        if (isNativeForm(current)) {
+            return isNativeFormSatisfied(current, variables);
+        }
+        String outVar = current.outputVariable();
+        if (outVar == null || outVar.isBlank()) {
+            return false;
+        }
+        String existing = variables.get(outVar.trim());
+        return existing != null && !existing.isBlank();
+    }
+
     public static void walkThroughSatisfiedQuestions(TurChatFlowState state, ChatFlowGraph graph) {
         if (state == null || graph == null) {
             return;
@@ -688,30 +720,8 @@ public final class ChatFlowOps {
                 return;
             }
             ChatFlowNode current = currentOpt.get();
-            if (!isQuestionLike(current)) {
+            if (!isSkippableSatisfiedQuestion(current, readVariables(state))) {
                 return;
-            }
-            // Author opted in to always asking — never skip.
-            if (Boolean.TRUE.equals(current.overrideExistingValue())) {
-                return;
-            }
-            Map<String, String> variables = readVariables(state);
-            // T107 — a native multi-field formCapture is satisfied (and thus
-            // skippable) when every required field's slot is filled; its own
-            // outputVariable is not what advances it.
-            if (isNativeForm(current)) {
-                if (!isNativeFormSatisfied(current, variables)) {
-                    return;
-                }
-            } else {
-                String outVar = current.outputVariable();
-                if (outVar == null || outVar.isBlank()) {
-                    return;
-                }
-                String existing = variables.get(outVar.trim());
-                if (existing == null || existing.isBlank()) {
-                    return;
-                }
             }
             List<ChatFlowEdge> outgoing = graph.outgoingEdges(current.id());
             if (outgoing.isEmpty()) {
@@ -1069,29 +1079,40 @@ public final class ChatFlowOps {
         List<PlanItem> out = new java.util.ArrayList<>();
         int seq = 1;
         for (Map<String, Object> row : rows) {
-            if (row == null) {
-                continue;
-            }
-            Object titleObj = row.get("title");
-            String title = titleObj == null ? null : titleObj.toString().trim();
-            if (title == null || title.isBlank()) {
-                continue;
-            }
-            Object idObj = row.get("id");
-            String id = (idObj == null || idObj.toString().isBlank())
-                    ? String.valueOf(seq)
-                    : idObj.toString().trim();
-            Object statusObj = row.get("status");
-            String status = (statusObj != null && PlanItem.DONE.equalsIgnoreCase(statusObj.toString().trim()))
-                    ? PlanItem.DONE
-                    : PlanItem.PENDING;
-            out.add(new PlanItem(id, title, status));
-            seq++;
-            if (out.size() >= MAX_PLAN_ITEMS) {
-                break;
+            PlanItem item = parsePlanItem(row, seq);
+            if (item != null) {
+                out.add(item);
+                seq++;
+                if (out.size() >= MAX_PLAN_ITEMS) {
+                    break;
+                }
             }
         }
         return out;
+    }
+
+    /**
+     * Parses one plan row into a {@link PlanItem}, or null when the row is null
+     * or has no usable title. {@code seq} is the fallback id for rows without one.
+     */
+    private static PlanItem parsePlanItem(Map<String, Object> row, int seq) {
+        if (row == null) {
+            return null;
+        }
+        Object titleObj = row.get("title");
+        String title = titleObj == null ? null : titleObj.toString().trim();
+        if (title == null || title.isBlank()) {
+            return null;
+        }
+        Object idObj = row.get("id");
+        String id = (idObj == null || idObj.toString().isBlank())
+                ? String.valueOf(seq)
+                : idObj.toString().trim();
+        Object statusObj = row.get("status");
+        String status = (statusObj != null && PlanItem.DONE.equalsIgnoreCase(statusObj.toString().trim()))
+                ? PlanItem.DONE
+                : PlanItem.PENDING;
+        return new PlanItem(id, title, status);
     }
 
     /**
@@ -1313,7 +1334,7 @@ public final class ChatFlowOps {
             return List.of();
         }
         ChatFlowNode downstream = graph.nodeById(outgoing.get(0).target()).orElse(null);
-        if (downstream == null || !"switch".equals(downstream.type())) {
+        if (downstream == null || !SWITCH.equals(downstream.type())) {
             return List.of();
         }
         List<String> labels = new java.util.ArrayList<>();
@@ -1358,7 +1379,7 @@ public final class ChatFlowOps {
                 return;
             }
             ChatFlowNode current = currentOpt.get();
-            if (!"switch".equals(current.type())) {
+            if (!SWITCH.equals(current.type())) {
                 return;
             }
             Map<String, String> variables = readVariables(state);
@@ -1457,19 +1478,44 @@ public final class ChatFlowOps {
         String lowerValue = value.toLowerCase();
 
         // 1) Exact label match.
+        Optional<ChatFlowNode.SwitchOption> exact = exactLabelMatch(options, value);
+        if (exact.isPresent()) {
+            log.info("[FlowOps] Switch '{}' exact match: '{}' → option '{}'",
+                    switchNode.id(), value, exact.get().id());
+            return exact;
+        }
+
+        // 2) Substring match — prefer the longest option label that fits, so multi-word labels
+        //    take precedence over their own prefixes ("Beach Getaway" > "Beach").
+        ChatFlowNode.SwitchOption best = substringLabelMatch(options, lowerValue);
+        if (best != null) {
+            log.info("[FlowOps] Switch '{}' substring match: '{}' → option '{}' (label='{}')",
+                    switchNode.id(), value, best.id(), best.label());
+            return Optional.of(best);
+        }
+
+        // 3) LLM classifier — the user phrased their answer in a way the cheap matches missed
+        //    ("I want to climb something" vs "Mountain Expedition"). Ask the aux model to pick.
+        return llmClassifyMatch(auxModel, switchNode, options, variableName, value);
+    }
+
+    /** Tier 1: the option whose label equals {@code value} (case-insensitive), or empty. */
+    private static Optional<ChatFlowNode.SwitchOption> exactLabelMatch(
+            List<ChatFlowNode.SwitchOption> options, String value) {
         for (ChatFlowNode.SwitchOption option : options) {
             if (option == null || option.label() == null) {
                 continue;
             }
             if (option.label().trim().equalsIgnoreCase(value)) {
-                log.info("[FlowOps] Switch '{}' exact match: '{}' → option '{}'",
-                        switchNode.id(), value, option.id());
                 return Optional.of(option);
             }
         }
+        return Optional.empty();
+    }
 
-        // 2) Substring match — prefer the longest option label that fits, so multi-word labels
-        //    take precedence over their own prefixes ("Beach Getaway" > "Beach").
+    /** Tier 2: the longest option label that contains (or is contained by) {@code lowerValue}, or null. */
+    private static ChatFlowNode.SwitchOption substringLabelMatch(
+            List<ChatFlowNode.SwitchOption> options, String lowerValue) {
         ChatFlowNode.SwitchOption best = null;
         int bestLen = 0;
         for (ChatFlowNode.SwitchOption option : options) {
@@ -1485,14 +1531,13 @@ public final class ChatFlowOps {
                 }
             }
         }
-        if (best != null) {
-            log.info("[FlowOps] Switch '{}' substring match: '{}' → option '{}' (label='{}')",
-                    switchNode.id(), value, best.id(), best.label());
-            return Optional.of(best);
-        }
+        return best;
+    }
 
-        // 3) LLM classifier — the user phrased their answer in a way the cheap matches missed
-        //    ("I want to climb something" vs "Mountain Expedition"). Ask the aux model to pick.
+    /** Tier 3: delegate to the aux model classifier, mapping its id back to an option. */
+    private static Optional<ChatFlowNode.SwitchOption> llmClassifyMatch(ChatModel auxModel,
+            ChatFlowNode switchNode, List<ChatFlowNode.SwitchOption> options,
+            String variableName, String value) {
         if (auxModel == null) {
             log.info("[FlowOps] Switch '{}' has no aux model for classification — falling back to wildcard",
                     switchNode.id());
@@ -1511,16 +1556,12 @@ public final class ChatFlowOps {
     }
 
     /**
-     * Asks {@code auxModel} to classify {@code value} into one of the supplied option ids. Returns
-     * the chosen id (when valid) or {@code null} when the model can't decide, returns a malformed
-     * answer, or replies with the sentinel {@code NONE}.
+     * Builds the {@code id → option} index and appends a human-readable
+     * "  - id: label" line per valid option to {@code optionList}. Options with
+     * a null/blank id are skipped.
      */
-    private static String classifySwitchWithLlm(ChatModel auxModel,
-            ChatFlowNode switchNode,
-            List<ChatFlowNode.SwitchOption> options,
-            String variableName,
-            String value) {
-        StringBuilder optionList = new StringBuilder();
+    private static Map<String, ChatFlowNode.SwitchOption> buildSwitchOptionIndex(
+            List<ChatFlowNode.SwitchOption> options, StringBuilder optionList) {
         Map<String, ChatFlowNode.SwitchOption> byId = new LinkedHashMap<>();
         for (ChatFlowNode.SwitchOption option : options) {
             if (option == null || option.id() == null || option.id().isBlank()) {
@@ -1533,6 +1574,16 @@ public final class ChatFlowOps {
             }
             optionList.append('\n');
         }
+        return byId;
+    }
+
+    private static String classifySwitchWithLlm(ChatModel auxModel,
+            ChatFlowNode switchNode,
+            List<ChatFlowNode.SwitchOption> options,
+            String variableName,
+            String value) {
+        StringBuilder optionList = new StringBuilder();
+        Map<String, ChatFlowNode.SwitchOption> byId = buildSwitchOptionIndex(options, optionList);
         if (byId.isEmpty()) {
             return null;
         }
@@ -1560,7 +1611,7 @@ public final class ChatFlowOps {
                             : "";
             // The model occasionally wraps the answer in backticks or quotes; strip them before
             // the lookup. We also accept the id case-insensitively to be lenient.
-            String cleaned = reply.replaceAll("^[`\"']+|[`\"']+$", "").trim();
+            String cleaned = reply.replaceAll("^[`\"']+", "").replaceAll("[`\"']+$", "").trim();
             if (cleaned.isEmpty() || "NONE".equalsIgnoreCase(cleaned)) {
                 log.info("[FlowOps] Switch '{}' LLM classifier returned NONE for '{}'",
                         switchNode.id(), value);
@@ -1603,11 +1654,11 @@ public final class ChatFlowOps {
             return true;
         }
         String varsJsonForLog = serializeVariables(variables);
-        Boolean spelResult = trySpel(expression, variables);
-        if (spelResult != null) {
+        Optional<Boolean> spelResult = trySpel(expression, variables);
+        if (spelResult.isPresent()) {
             log.info("[FlowOps] Condition (SpEL): expr='{}' vars={} result={}",
-                    expression, varsJsonForLog, spelResult);
-            return spelResult;
+                    expression, varsJsonForLog, spelResult.get());
+            return spelResult.get();
         }
         log.info("[FlowOps] Condition fell back to LLM judge: expr='{}' vars={}",
                 expression, varsJsonForLog);
@@ -1671,9 +1722,9 @@ public final class ChatFlowOps {
      * plain identifiers like {@code stuffedCrust} resolve to map entries —
      * no need for the {@code #var} prefix).
      * <p>
-     * Returns the boolean result on success, or {@code null} when SpEL
-     * cannot parse / evaluate / coerce-to-boolean — that signals the caller
-     * to fall back to the LLM judge. Common reasons to return {@code null}:
+     * Returns the boolean result on success, or {@link Optional#empty()} when
+     * SpEL cannot parse / evaluate / coerce-to-boolean — that signals the
+     * caller to fall back to the LLM judge. Common reasons to return empty:
      * <ul>
      *   <li>The expression is plain language (no operators).</li>
      *   <li>A referenced variable is missing from the map.</li>
@@ -1681,16 +1732,23 @@ public final class ChatFlowOps {
      *       (e.g. a string or number).</li>
      * </ul>
      */
-    private static Boolean trySpel(String expression, Map<String, String> variables) {
+    // Package-visible for T644 security tests (SpEL sandbox verification).
+    static Optional<Boolean> trySpel(String expression, Map<String, String> variables) {
         try {
             Map<String, String> root = variables == null ? Map.of() : variables;
-            StandardEvaluationContext ctx = new StandardEvaluationContext(root);
-            ctx.addPropertyAccessor(new MapAccessor());
-            Object result = SPEL_PARSER.parseExpression(expression).getValue(ctx);
-            return result instanceof Boolean b ? b : null;
+            // T644 / §XXXVII.6 — SimpleEvaluationContext allows ONLY property
+            // access on the variables map; it blocks type references
+            // (T(java.lang.Runtime)...) and method invocation, closing the SpEL
+            // RCE sink reachable via flow-bundle import / LLM authoring. The
+            // runtime only ever needs to read variables, never call methods.
+            SimpleEvaluationContext ctx = SimpleEvaluationContext
+                    .forPropertyAccessors(new MapAccessor())
+                    .build();
+            Object result = SPEL_PARSER.parseExpression(expression).getValue(ctx, root);
+            return result instanceof Boolean b ? Optional.of(b) : Optional.empty();
         } catch (RuntimeException e) {
             log.debug("[FlowOps] SpEL could not evaluate '{}': {}", expression, e.getMessage());
-            return null;
+            return Optional.empty();
         }
     }
 
@@ -2034,11 +2092,9 @@ public final class ChatFlowOps {
             // instead of 2. Admin-friendly default.
             LevenshteinAutomata la = new LevenshteinAutomata(optionLower, true);
             ByteRunAutomaton matcher = new ByteRunAutomaton(la.toAutomaton(maxEdits));
-            if (matcher.run(valueBytes, 0, valueBytes.length)) {
-                if (optionLower.length() > bestLen) {
-                    best = option.trim();
-                    bestLen = optionLower.length();
-                }
+            if (matcher.run(valueBytes, 0, valueBytes.length) && optionLower.length() > bestLen) {
+                best = option.trim();
+                bestLen = optionLower.length();
             }
         }
         return best;

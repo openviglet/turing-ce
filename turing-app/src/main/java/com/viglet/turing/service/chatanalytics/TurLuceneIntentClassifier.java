@@ -78,8 +78,7 @@ import lombok.extern.slf4j.Slf4j;
  * </ul>
  *
  * <p>Eviction: piggybacks on the {@code turAnalyticsIntentMLTIndex}
- * Spring cache name declared on
- * {@link TurAnalyticsIntentRepository#LUCENE_INDEX} — admin saves and
+ * Spring cache name — admin saves and
  * deletes trigger {@link #evictAll()} via {@link TurAnalyticsIntentEvictionListener}
  * (same JPA {@code @EntityListeners} pattern T27 uses for the chat-flow
  * router cache).
@@ -213,8 +212,10 @@ public class TurLuceneIntentClassifier implements TurIntentClassifierStrategy {
         int docs = 0;
         try (IndexWriter writer = new IndexWriter(directory, cfg)) {
             for (TurAnalyticsIntent intent : catalog) {
-                if (intent.getLabel() == null || intent.getLabel().isBlank()) continue;
-                if (intent.getSamples() == null || intent.getSamples().isBlank()) continue;
+                if (intent.getLabel() == null || intent.getLabel().isBlank()
+                        || intent.getSamples() == null || intent.getSamples().isBlank()) {
+                    continue;
+                }
                 Document doc = new Document();
                 doc.add(new StringField(FIELD_LABEL, intent.getLabel(), Field.Store.YES));
                 doc.add(new TextField(FIELD_SAMPLES,
@@ -254,7 +255,7 @@ public class TurLuceneIntentClassifier implements TurIntentClassifierStrategy {
         for (String line : raw.split("\n")) {
             String trimmed = line.trim();
             if (trimmed.isEmpty()) continue;
-            if (sb.length() > 0) sb.append(' ');
+            if (!sb.isEmpty()) sb.append(' ');
             sb.append(trimmed);
         }
         return sb.toString();

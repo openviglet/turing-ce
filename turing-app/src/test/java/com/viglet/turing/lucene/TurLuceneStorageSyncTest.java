@@ -107,7 +107,7 @@ class TurLuceneStorageSyncTest {
     }
 
     @Test
-    void syncToStorageDeletesOrphanedRemoteFiles() throws IOException {
+    void syncToStorageDeletesOrphanedRemoteFiles() {
         when(storageService.isEnabled()).thenReturn(true);
         when(storageService.getType()).thenReturn(TurStorageType.MINIO);
 
@@ -136,10 +136,29 @@ class TurLuceneStorageSyncTest {
         verify(storageService).uploadStream(eq("lucene-indexes/test-core/_0.cfs"), any(), anyLong(), anyString());
     }
 
+    @Test
+    void syncToStorageExcludesTmpFiles() throws IOException {
+        when(storageService.isEnabled()).thenReturn(true);
+        when(storageService.getType()).thenReturn(TurStorageType.MINIO);
+        when(storageService.listObjects(anyString())).thenReturn(List.of());
+
+        // Lucene's transient merge/flush temp files — must never be uploaded
+        // (they vanish before the async sync thread reads them).
+        Files.writeString(tempDir.resolve("_nm_Lucene90FieldsIndex-doc_ids_m6.tmp"), "");
+        Files.writeString(tempDir.resolve("_0.cfs"), "data");
+
+        sync.syncToStorage(tempDir, "test-core");
+
+        verify(storageService, never()).uploadStream(
+                eq("lucene-indexes/test-core/_nm_Lucene90FieldsIndex-doc_ids_m6.tmp"),
+                any(), anyLong(), anyString());
+        verify(storageService).uploadStream(eq("lucene-indexes/test-core/_0.cfs"), any(), anyLong(), anyString());
+    }
+
     // ---- syncFromStorage ----
 
     @Test
-    void syncFromStorageDownloadsMissingFiles() throws IOException {
+    void syncFromStorageDownloadsMissingFiles() {
         when(storageService.isEnabled()).thenReturn(true);
         when(storageService.getType()).thenReturn(TurStorageType.MINIO);
         when(storageService.listObjects("lucene-indexes/test-core/")).thenReturn(List.of(

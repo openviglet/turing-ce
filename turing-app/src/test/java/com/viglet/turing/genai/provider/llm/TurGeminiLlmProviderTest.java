@@ -12,6 +12,9 @@ import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockedConstruction;
@@ -52,36 +55,32 @@ class TurGeminiLlmProviderTest {
         assertEquals("gemini", provider.getPluginType());
     }
 
-    @Test
-    void testCreateChatModel_missingApiKey_null() {
+    @ParameterizedTest(name = "apiKey=[{0}]")
+    @NullSource
+    @ValueSource(strings = {"", "   "})
+    void testCreateChatModel_missingApiKey(String apiKey) {
         when(optionsParser.parse(any())).thenReturn(Map.of());
 
-        assertThrows(IllegalStateException.class, () -> provider.createChatModel(instance, null));
+        assertThrows(IllegalStateException.class, () -> provider.createChatModel(instance, apiKey));
     }
 
     @Test
-    void testCreateChatModel_missingApiKey_empty() {
+    void testCreateEmbeddingModel_returnsNativeModel() {
+        // T495 — Gemini embeddings are now supported via embedContent.
         when(optionsParser.parse(any())).thenReturn(Map.of());
 
-        assertThrows(IllegalStateException.class, () -> provider.createChatModel(instance, ""));
+        var model = provider.createEmbeddingModel(instance, "dummy-key");
+
+        assertNotNull(model);
+        assertEquals(com.viglet.turing.genai.nativeapi.gemini.TurGeminiEmbeddingModel.class,
+                model.getClass());
     }
 
     @Test
-    void testCreateChatModel_missingApiKey_blank() {
+    void testCreateEmbeddingModel_missingApiKey() {
         when(optionsParser.parse(any())).thenReturn(Map.of());
 
-        assertThrows(IllegalStateException.class, () -> provider.createChatModel(instance, "   "));
-    }
-
-    @Test
-    void testCreateEmbeddingModel_unsupported() {
-        assertThrows(UnsupportedOperationException.class,
-                () -> provider.createEmbeddingModel(instance, "dummy-key"));
-    }
-
-    @Test
-    void testCreateEmbeddingModel_unsupported_withNullKey() {
-        assertThrows(UnsupportedOperationException.class,
+        assertThrows(IllegalStateException.class,
                 () -> provider.createEmbeddingModel(instance, null));
     }
 

@@ -24,7 +24,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.viglet.turing.domain.customtool.TurCustomToolRepositoryPort;
+import com.viglet.turing.persistence.adapter.customtool.TurCustomToolReader;
 import com.viglet.turing.genai.tool.TurCustomToolCallbackService;
 import com.viglet.turing.genai.tool.TurCustomToolCallbackService.PreviewResult;
 import com.viglet.turing.genai.tool.TurCustomToolDescriptorService;
@@ -58,20 +58,20 @@ import org.codehaus.groovy.syntax.SyntaxException;
 public class TurCustomToolAPI {
     private final TurCustomToolRepository repository;
     private final TurCustomToolMapper mapper;
-    private final TurCustomToolRepositoryPort repositoryPort;
+    private final TurCustomToolReader reader;
     private final TurCustomToolCallbackService callbackService;
     private final TurCustomToolDescriptorService descriptorService;
     private final TurCustomToolDraftRegistry draftRegistry;
 
     public TurCustomToolAPI(TurCustomToolRepository repository,
             TurCustomToolMapper mapper,
-            TurCustomToolRepositoryPort repositoryPort,
+            TurCustomToolReader reader,
             TurCustomToolCallbackService callbackService,
             TurCustomToolDescriptorService descriptorService,
             TurCustomToolDraftRegistry draftRegistry) {
         this.repository = repository;
         this.mapper = mapper;
-        this.repositoryPort = repositoryPort;
+        this.reader = reader;
         this.callbackService = callbackService;
         this.descriptorService = descriptorService;
         this.draftRegistry = draftRegistry;
@@ -149,6 +149,9 @@ public class TurCustomToolAPI {
 
     @Operation(summary = "Validate a Groovy script for syntax / compile errors")
     @PostMapping("/validate")
+    @SuppressWarnings("java:S106") // not logging: capture System.out/err to restore them
+    // after temporarily redirecting both to a sink so the Groovy parser's stray
+    // stdout/stderr chatter doesn't leak into the application log.
     public ValidateScriptResponse validate(@RequestBody ValidateScriptRequest request) {
         String script = request.script() == null ? "" : request.script();
         synchronized (PARSE_OUTPUT_LOCK) {
@@ -214,7 +217,7 @@ public class TurCustomToolAPI {
     @PostMapping("/{id}/execute")
     public ExecuteToolResponse execute(@PathVariable String id,
             @RequestBody ExecuteToolRequest body) {
-        return repositoryPort.findById(id)
+        return reader.findById(id)
                 .map(tool -> {
                     PreviewResult preview = callbackService.executeForPreview(tool,
                             body == null || body.argsJson() == null ? "{}" : body.argsJson());
@@ -263,7 +266,7 @@ public class TurCustomToolAPI {
         if (username == null) {
             return new DraftPutResponse(false, "Anonymous sessions cannot push drafts.", null, null, null);
         }
-        if (repositoryPort.findById(id).isEmpty()) {
+        if (reader.findById(id).isEmpty()) {
             return new DraftPutResponse(false, "Custom tool '" + id + "' not found.", null, null, null);
         }
         PutResult put = draftRegistry.put(username, id, body == null ? "" : body.groovyScript());

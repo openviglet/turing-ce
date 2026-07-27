@@ -11,6 +11,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class TurWebCrawlerToolServiceTest {
 
@@ -28,53 +30,34 @@ class TurWebCrawlerToolServiceTest {
         isValidExtractLinkMethod.setAccessible(true);
     }
 
-    @Test
-    void shouldAcceptValidLink() throws Exception {
-        Document doc = Jsoup.parse("<a href='https://example.com/page'>Link</a>", "https://example.com");
+    @ParameterizedTest(name = "isValidLink({0}) -> {2}")
+    @CsvSource(value = {
+            "'<a href=\"https://example.com/page\">Link</a>','https://example.com',true",
+            "'<a href=\"javascript:void(0)\">Link</a>','https://example.com',false",
+            // Jsoup resolves empty href to the base URL, so absUrl returns a valid URL
+            "'<a href=\"\">Link</a>','https://example.com',true",
+            "'<a>Link</a>','https://example.com',false"
+    })
+    void shouldValidateLink(String html, String baseUrl, boolean expected) throws Exception {
+        Document doc = Jsoup.parse(html, baseUrl);
         Element link = doc.select("a").first();
 
         boolean result = (boolean) isValidLinkMethod.invoke(service, link);
 
-        assertThat(result).isTrue();
+        assertThat(result).isEqualTo(expected);
     }
 
-    @Test
-    void shouldRejectJavascriptLink() throws Exception {
-        Document doc = Jsoup.parse("<a href='javascript:void(0)'>Link</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        boolean result = (boolean) isValidLinkMethod.invoke(service, link);
-
-        assertThat(result).isFalse();
-    }
-
-    @Test
-    void shouldAcceptEmptyHrefLinkResolvedToBaseUrl() throws Exception {
-        Document doc = Jsoup.parse("<a href=''>Link</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        // Jsoup resolves empty href to the base URL, so absUrl returns a valid URL
-        boolean result = (boolean) isValidLinkMethod.invoke(service, link);
-
-        assertThat(result).isTrue();
-    }
-
-    @Test
-    void shouldRejectLinkWithNoHrefAttribute() throws Exception {
-        Document doc = Jsoup.parse("<a>Link</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        boolean result = (boolean) isValidLinkMethod.invoke(service, link);
-
-        assertThat(result).isFalse();
-    }
-
-    @ParameterizedTest
+    @ParameterizedTest(name = "isValidExtractLink({0}, filter={2}) -> {3}")
     @CsvSource(value = {
             "'<a href=\"https://example.com/page\">Link</a>','https://example.com',null,true",
             "'<a href=\"https://example.com\">Documentation</a>','https://example.com','documentation',true",
             "'<a href=\"https://example.com/docs/api\">Link</a>','https://example.com','docs',true",
-            "'<a href=\"https://example.com/about\">About</a>','https://example.com','pricing',false"
+            "'<a href=\"https://example.com/about\">About</a>','https://example.com','pricing',false",
+            "'<a href=\"javascript:alert(1)\">Click</a>','https://example.com',null,false",
+            "'<a href=\"\">Empty</a>','https://example.com',null,true",
+            "'<a>Link</a>','https://example.com',null,false",
+            "'<a href=\"https://example.com/documentation/api\">API</a>','https://example.com','documentation',true",
+            "'<a href=\"https://example.com/about\">About Us</a>','https://example.com','pricing',false"
     }, nullValues = "null")
     void shouldValidateExtractLink(String html, String baseUrl, String filter, boolean expected) throws Exception {
         Document doc = Jsoup.parse(html, baseUrl);
@@ -83,59 +66,6 @@ class TurWebCrawlerToolServiceTest {
         boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, filter);
 
         assertThat(result).isEqualTo(expected);
-    }
-
-    @Test
-    void shouldRejectJavascriptExtractLink() throws Exception {
-        Document doc = Jsoup.parse("<a href='javascript:alert(1)'>Click</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, null);
-
-        assertThat(result).isFalse();
-    }
-
-    @Test
-    void shouldAcceptEmptyHrefExtractLinkResolvedToBaseUrl() throws Exception {
-        Document doc = Jsoup.parse("<a href=''>Empty</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        // Jsoup resolves empty href to the base URL
-        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, null);
-
-        assertThat(result).isTrue();
-    }
-
-    @Test
-    void shouldRejectExtractLinkWithNoHrefAttribute() throws Exception {
-        Document doc = Jsoup.parse("<a>Link</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, null);
-
-        assertThat(result).isFalse();
-    }
-
-    @Test
-    void shouldMatchExtractLinkByHrefKeyword() throws Exception {
-        Document doc = Jsoup.parse(
-                "<a href='https://example.com/documentation/api'>API</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, "documentation");
-
-        assertThat(result).isTrue();
-    }
-
-    @Test
-    void shouldNotMatchExtractLinkWhenKeywordNotInTextOrHref() throws Exception {
-        Document doc = Jsoup.parse(
-                "<a href='https://example.com/about'>About Us</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, "pricing");
-
-        assertThat(result).isFalse();
     }
 
     @Test
@@ -150,15 +80,11 @@ class TurWebCrawlerToolServiceTest {
         assertThat(result).contains("Error fetching URL");
     }
 
-    @Test
-    void extractLinksShouldReturnErrorForInvalidUrl() {
-        String result = service.extractLinks("http://invalid-nonexistent-domain-99999.com", null);
-        assertThat(result).contains("Error fetching URL");
-    }
-
-    @Test
-    void extractLinksShouldReturnErrorForInvalidUrlWithFilter() {
-        String result = service.extractLinks("http://invalid-nonexistent-domain-99999.com", "docs");
+    @ParameterizedTest(name = "extractLinks(invalid-url, filter={0}) -> error")
+    @NullSource
+    @ValueSource(strings = {"docs", "   "})
+    void extractLinksShouldReturnErrorForInvalidUrl(String filter) {
+        String result = service.extractLinks("http://invalid-nonexistent-domain-99999.com", filter);
         assertThat(result).contains("Error fetching URL");
     }
 
@@ -240,9 +166,10 @@ class TurWebCrawlerToolServiceTest {
         method.invoke(service, sb, doc);
 
         String result = sb.toString();
-        assertThat(result).contains("Links found on page");
         // No link entries like "- Page -> https://..."
-        assertThat(result).doesNotContain("-> http");
+        assertThat(result)
+                .contains("Links found on page")
+                .doesNotContain("-> http");
     }
 
     @Test
@@ -262,8 +189,9 @@ class TurWebCrawlerToolServiceTest {
         method.invoke(service, sb, doc);
 
         String result = sb.toString();
-        assertThat(result).contains("Links found on page");
-        assertThat(result).doesNotContain("Link1").doesNotContain("Link2");
+        assertThat(result)
+                .contains("Links found on page")
+                .doesNotContain("Link1").doesNotContain("Link2");
     }
 
     // --- extractLinks with blank filter keyword ---
@@ -272,19 +200,6 @@ class TurWebCrawlerToolServiceTest {
     void extractLinksShouldReturnErrorForInvalidUrlWithBlankFilter() {
         String result = service.extractLinks("http://invalid-nonexistent-domain-99999.com", "   ");
         assertThat(result).contains("Error fetching URL");
-    }
-
-    // --- isValidExtractLink with empty filter keyword ---
-
-    @Test
-    void shouldAcceptExtractLinkWithEmptyFilterKeyword() throws Exception {
-        Document doc = Jsoup.parse(
-                "<a href='https://example.com/page'>Link</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        // null filter accepts all valid links
-        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, null);
-        assertThat(result).isTrue();
     }
 
     // --- isValidLink with various hrefs ---
@@ -307,25 +222,22 @@ class TurWebCrawlerToolServiceTest {
         assertThat(result).isTrue();
     }
 
-    // --- isValidExtractLink case-insensitive matching ---
+    // --- isValidExtractLink accepts valid links (blank/text/href keyword matches) ---
 
-    @Test
-    void shouldMatchExtractLinkByTextKeywordCaseInsensitive() throws Exception {
-        Document doc = Jsoup.parse(
-                "<a href='https://example.com/page'>DOCUMENTATION Guide</a>", "https://example.com");
+    @ParameterizedTest(name = "isValidExtractLink html={0} filter={1} -> true")
+    @CsvSource(nullValues = "null", value = {
+            // null filter accepts all valid links
+            "'<a href=\"https://example.com/page\">Link</a>',null",
+            // case-insensitive text keyword match
+            "'<a href=\"https://example.com/page\">DOCUMENTATION Guide</a>',documentation",
+            // case-insensitive href keyword match
+            "'<a href=\"https://example.com/API/v2\">Link</a>',api"
+    })
+    void shouldAcceptValidExtractLink(String html, String filter) throws Exception {
+        Document doc = Jsoup.parse(html, "https://example.com");
         Element link = doc.select("a").first();
 
-        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, "documentation");
-        assertThat(result).isTrue();
-    }
-
-    @Test
-    void shouldMatchExtractLinkByHrefKeywordCaseInsensitive() throws Exception {
-        Document doc = Jsoup.parse(
-                "<a href='https://example.com/API/v2'>Link</a>", "https://example.com");
-        Element link = doc.select("a").first();
-
-        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, "api");
+        boolean result = (boolean) isValidExtractLinkMethod.invoke(service, link, filter);
         assertThat(result).isTrue();
     }
 }

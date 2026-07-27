@@ -3,6 +3,8 @@
     "save": "Salvar",
     "saving": "Salvando…",
     "cancel": "Cancelar",
+    "next": "Próximo",
+    "back": "Voltar",
     "close": "Fechar",
     "delete": "Excluir",
     "deleting": "Excluindo…",
@@ -16,6 +18,11 @@
     "openNavigation": "Abrir navegação",
     "connectionError": "Erro de conexão ou tempo esgotado ao buscar {{resource}}.",
     "yes": "Sim",
-    "no": "Não"
+    "no": "Não",
+    "active": "Ativo",
+    "idle": "Inativo",
+    "activeToggleHint": "Ativo — clique para desativar",
+    "idleToggleHint": "Inativo — clique para ativar",
+    "remove": "Remover"
   }
 }

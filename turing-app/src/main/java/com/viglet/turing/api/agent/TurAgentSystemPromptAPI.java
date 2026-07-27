@@ -67,8 +67,27 @@ public class TurAgentSystemPromptAPI {
     @Secured({"ROLE_ADMIN", "AI_AGENT_VIEW"})
     @Transactional(readOnly = true)
     public TurSystemPromptPreviewDto preview(@PathVariable String id,
-            @RequestParam(required = false) String flowId) {
-        return previewService.buildPreview(requireAgent(id), flowId);
+            @RequestParam(required = false) String flowId,
+            @RequestParam(required = false) String nodeId,
+            @RequestParam(required = false) String vars) {
+        return previewService.buildPreview(requireAgent(id), flowId, nodeId, vars);
+    }
+
+    @Operation(summary = "T612/T618 — replay the assembled prompt from a real conversation. "
+            + "Without turnIndex (T612) it rebuilds the system message from the conversation's "
+            + "current persisted state (governing flow, cursor node, collected slots, resolved "
+            + "persona) through the same runtime assembler. With turnIndex (T618) it loads that "
+            + "captured past turn verbatim from the prompt-capture store — the exact system "
+            + "message + whole-message list the model received, frozen at send time. Either way "
+            + "it rides the tool-call trace along and advertises the available captured turns. "
+            + "Degrades to a plain preview when the conversation has no state / capture.")
+    @GetMapping("/preview/replay")
+    @Secured({"ROLE_ADMIN", "AI_AGENT_VIEW"})
+    @Transactional(readOnly = true)
+    public TurSystemPromptPreviewDto replay(@PathVariable String id,
+            @RequestParam String conversationId,
+            @RequestParam(required = false) Integer turnIndex) {
+        return previewService.buildReplayPreview(requireAgent(id), conversationId, turnIndex);
     }
 
     @Operation(summary = "Fast heuristic validation of the system prompt for conflicts")

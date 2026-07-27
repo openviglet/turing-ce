@@ -19,6 +19,7 @@ import com.viglet.turing.persistence.model.mcp.TurMcpServerConnectionType;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.client.transport.HttpClientSseClientTransport;
+import io.modelcontextprotocol.client.transport.HttpClientStreamableHttpTransport;
 import io.modelcontextprotocol.client.transport.ServerParameters;
 import io.modelcontextprotocol.client.transport.StdioClientTransport;
 import io.modelcontextprotocol.json.McpJsonDefaults;
@@ -32,10 +33,16 @@ import lombok.extern.slf4j.Slf4j;
 public class TurMcpToolCallbackService {
 
     private final TurMcpServerRepositoryPort mcpServerRepositoryPort;
+    private final com.viglet.turing.properties.TurMcpClientProperty mcpClientProperty;
+    private final com.viglet.turing.spring.security.ssrf.TurSsrfGuard ssrfGuard;
     private final ConcurrentHashMap<String, McpSyncClient> clientCache = new ConcurrentHashMap<>();
 
-    public TurMcpToolCallbackService(TurMcpServerRepositoryPort mcpServerRepositoryPort) {
+    public TurMcpToolCallbackService(TurMcpServerRepositoryPort mcpServerRepositoryPort,
+            com.viglet.turing.properties.TurMcpClientProperty mcpClientProperty,
+            com.viglet.turing.spring.security.ssrf.TurSsrfGuard ssrfGuard) {
         this.mcpServerRepositoryPort = mcpServerRepositoryPort;
+        this.mcpClientProperty = mcpClientProperty;
+        this.ssrfGuard = ssrfGuard;
     }
 
     /**
@@ -122,25 +129,33 @@ public class TurMcpToolCallbackService {
         return client;
     }
 
-    // MCP SDK 2.0.0-RC1 deprecated HttpClientSseClientTransport in favour of
-    // HttpClientStreamableHttpTransport. We deliberately keep the SSE transport:
-    // it speaks the legacy two-endpoint HTTP+SSE protocol our configured MCP
-    // servers expose (GET /sse opens the stream + an `endpoint` event tells the
-    // client where to POST messages), whereas Streamable HTTP is a different
-    // wire protocol on a single endpoint (default /mcp) and does NOT fall back
-    // to the legacy handshake — pointing it at an SSE-only server would break
-    // the connection. Switching is therefore a per-server protocol decision,
-    // not a mechanical deprecation fix.
+    // T294 — per-server HTTP transport choice. Streamable HTTP and legacy
+    // SSE are DIFFERENT wire protocols, not interchangeable: SSE is the
+    // two-endpoint handshake (GET /sse opens the stream + an `endpoint` event
+    // tells the client where to POST), whereas Streamable HTTP is a single
+    // endpoint (default /mcp) with no fallback to the SSE handshake — pointing
+    // it at an SSE-only server would break the connection. So each HTTP server
+    // declares its transport via TurMcpServer.transportType; a null value
+    // (legacy rows) defaults to SSE so existing servers are unaffected.
     //
-    // The deprecation is a plain @Deprecated (NOT forRemoval), so the API is
-    // not going away in the short term and suppressing the warning is the
-    // sanctioned approach until our MCP servers move to Streamable HTTP.
-    // Tracked: docs/ROADMAP.md T294 (per-server transport opt-in).
+    // HttpClientSseClientTransport is @Deprecated (NOT forRemoval) in MCP SDK
+    // 2.0.0; we still offer it as an explicit per-server choice, so the
+    // suppression stays as long as SSE remains selectable.
     @SuppressWarnings("deprecation")
     private McpClientTransport createTransport(TurMcpServerDomain server) {
         if (server.connectionType() == TurMcpServerConnectionType.HTTP) {
+            // T650 / §XXXVII.12 — optional SSRF guard on the client URL.
+            if (mcpClientProperty.isBlockPrivateUrls() && !ssrfGuard.isAllowedUrl(server.url())) {
+                throw new IllegalArgumentException(
+                        "MCP client URL is not an allowed egress target: " + server.url());
+            }
+            if (server.isStreamableHttp()) {
+                return HttpClientStreamableHttpTransport.builder(server.url()).build();
+            }
             return HttpClientSseClientTransport.builder(server.url()).build();
         } else {
+            // T650 / §XXXVII.12 — optional stdio command allowlist (RCE-by-config).
+            assertStdioCommandAllowed(server.command());
             String[] args = server.args() != null && !server.args().isBlank()
                     ? server.args().split("\\s+")
                     : new String[0];
@@ -149,6 +164,37 @@ public class TurMcpToolCallbackService {
                     .build();
             return new StdioClientTransport(params, McpJsonDefaults.getMapper());
         }
+    }
+
+    /**
+     * T650 / §XXXVII.12 — when {@code turing.mcp-client.allowed-stdio-commands} is
+     * configured, refuse a stdio MCP server whose command's base name is not in
+     * the allowlist (blocks arbitrary local-process execution by configuration).
+     * Empty allowlist = legacy (any command allowed).
+     */
+    private void assertStdioCommandAllowed(String command) {
+        if (!isStdioCommandAllowed(command, mcpClientProperty.getAllowedStdioCommands())) {
+            throw new IllegalArgumentException(
+                    "MCP client stdio command '" + command + "' is not in the allowed-stdio-commands allowlist.");
+        }
+    }
+
+    /**
+     * Pure allowlist check (package-visible for tests). Empty/null allowlist =
+     * legacy (any command allowed). Otherwise the command's base name must match
+     * an allowlist entry case-insensitively.
+     */
+    static boolean isStdioCommandAllowed(String command, java.util.List<String> allowed) {
+        if (allowed == null || allowed.isEmpty()) {
+            return true;
+        }
+        String base = command == null ? "" : command.trim().replace('\\', '/');
+        int slash = base.lastIndexOf('/');
+        if (slash >= 0) {
+            base = base.substring(slash + 1);
+        }
+        final String baseName = base.toLowerCase();
+        return allowed.stream().anyMatch(a -> a != null && a.trim().equalsIgnoreCase(baseName));
     }
 
     @PreDestroy

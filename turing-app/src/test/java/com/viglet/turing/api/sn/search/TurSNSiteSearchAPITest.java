@@ -49,7 +49,9 @@ import com.viglet.turing.commons.sn.bean.TurSNSitePostParamsBean;
 import com.viglet.turing.commons.sn.bean.TurSNSiteSearchBean;
 import com.viglet.turing.commons.sn.search.TurSNFilterQueryOperator;
 import com.viglet.turing.persistence.model.sn.TurSNSite;
+import com.viglet.turing.sn.TurSNDuplicateClusteringService;
 import com.viglet.turing.sn.TurSNSearchProcess;
+import com.viglet.turing.sn.TurSNSimilarDocumentsService;
 import com.viglet.turing.sn.snapshot.TurSNSiteSearchSnapshot;
 import com.viglet.turing.sn.snapshot.TurSNSiteSearchSnapshotService;
 
@@ -79,7 +81,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
 
         ResponseEntity<TurSNSiteSearchBean> response = api.turSNSiteSearchSelectPost("site",
                 new TurSNSearchParams(), TurSNFilterQueryOperator.NONE,
@@ -96,7 +100,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
         TurSNSearchParams params = new TurSNSearchParams();
         ResponseEntity<TurSNSiteSearchBean> notFound = ResponseEntity.status(HttpStatus.NOT_FOUND).build();
 
@@ -117,7 +123,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
         TurSNSearchParams params = new TurSNSearchParams();
         HttpServletRequest request = mock(HttpServletRequest.class);
         com.viglet.turing.commons.sn.search.TurSNSiteSearchContext context =
@@ -142,7 +150,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
         TurSNSearchParams params = new TurSNSearchParams();
         TurSNSitePostParamsBean postParams = new TurSNSitePostParamsBean();
         postParams.setLocale("pt_BR");
@@ -168,7 +178,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
 
         ResponseEntity<List<String>> response = api.turSNSiteSearchLatestImpersonate("site", 5, "en_US",
                 Optional.empty(), null);
@@ -181,7 +193,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
         List<TurSNSiteLocaleBean> locales = List.of(new TurSNSiteLocaleBean());
 
         TurSNSiteSearchSnapshot snap = snapshot("site");
@@ -198,7 +212,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
 
         when(snapshots.getSnapshot("site", null)).thenReturn(Optional.empty());
 
@@ -211,7 +227,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
         TurSNSiteSearchSnapshot snap = snapshot("site");
         when(snapshots.getSnapshot("site", null)).thenReturn(Optional.of(snap));
 
@@ -229,7 +247,9 @@ class TurSNSiteSearchAPITest {
         TurSNSiteSearchService service = mock(TurSNSiteSearchService.class);
         TurSNSearchProcess searchProcess = mock(TurSNSearchProcess.class);
         TurSNSiteSearchSnapshotService snapshots = mock(TurSNSiteSearchSnapshotService.class);
-        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots);
+        TurSNSiteSearchAPI api = new TurSNSiteSearchAPI(service, searchProcess, snapshots,
+                mock(TurSNSimilarDocumentsService.class),
+                mock(TurSNDuplicateClusteringService.class));
         when(snapshots.getSnapshot("site", null)).thenReturn(Optional.empty());
 
         ResponseEntity<List<TurSNSiteSearchAPI.TurSNSiteSortOptionBean>> response =

@@ -3,6 +3,7 @@ package com.viglet.turing.api.se;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -44,6 +45,7 @@ import com.viglet.turing.solr.TurSolrInstance;
 import com.viglet.turing.solr.TurSolrInstanceProcess;
 import com.viglet.turing.solr.bean.TurSECoreInfo;
 import com.viglet.turing.solr.source.TurSolrInstanceSource;
+import com.viglet.turing.tenant.TurInfraTenantScope;
 
 /**
  * Tests for TurSEInstanceAPI.
@@ -74,6 +76,9 @@ class TurSEInstanceAPITest {
     @Spy
     private TurSEInstanceMapper turSEInstanceMapper = Mappers.getMapper(TurSEInstanceMapper.class);
 
+    @Mock
+    private TurInfraTenantScope tenantScope;
+
     @InjectMocks
     private TurSEInstanceAPI turSEInstanceAPI;
 
@@ -81,6 +86,11 @@ class TurSEInstanceAPITest {
 
     @BeforeEach
     void setUp() {
+        // Tenancy-off passthrough: list calls the unscoped supplier, create is a no-op.
+        lenient().when(tenantScope.visibleList(any(), any()))
+                .thenAnswer(inv -> ((java.util.function.Supplier<?>) inv.getArgument(0)).get());
+        lenient().when(tenantScope.stampOnCreate(any())).thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(tenantScope.isVisibleToTenant(any())).thenReturn(true);
         mockMvc = MockMvcBuilders.standaloneSetup(turSEInstanceAPI).build();
     }
 
@@ -186,6 +196,11 @@ class TurSEInstanceAPITest {
 
     @Test
     void testTurSEInstanceDelete() throws Exception {
+        // T365 — delete only runs for a visible instance, so the by-id load must resolve.
+        TurSEInstance instance = new TurSEInstance();
+        instance.setId("1");
+        when(seInstanceSource.findById("1")).thenReturn(Optional.of(instance));
+
         mockMvc.perform(delete("/api/se/1"))
                 .andExpect(status().isOk())
                 .andExpect(content().string("true"));

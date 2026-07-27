@@ -50,9 +50,8 @@ import lombok.extern.slf4j.Slf4j;
  * explicit key check only adds the {@code apiKey} query-parameter convenience
  * for plain {@code <script>} / EDS GET usage.
  *
- * <p>The {@code findByName} lookup is {@code @Cacheable} and is the same call
- * the controllers make to resolve the site, so this adds no extra DB round-trip
- * on a warm cache.
+ * <p>The {@code findByName} lookup is the same call the controllers make to
+ * resolve the site, so it reuses the work the request already needs.
  *
  * @author Alexandre Oliveira
  * @since 2026.3.1
@@ -61,21 +60,28 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 public class TurSNSiteApiKeyGateFilter extends OncePerRequestFilter {
 
-    /** Query-parameter alternative to the {@code Key} header for simple GET clients. */
-    private static final String API_KEY_PARAM = "apiKey";
-
     /**
      * Public SN endpoints keyed by site NAME: {@code /api/sn/{site}/(ac|search|
-     * _search|click|query|chat)...}. Mirrors the {@code permitAll} matchers in
-     * the security config. Admin endpoints (resolved by id, or {@code names} /
-     * {@code console}) never match a real site name and so are never gated.
+     * _search|click|query|chat|copilot)...}. Mirrors the {@code permitAll} matchers
+     * in the security config. {@code copilot} (T392) is an LLM-cost surface gated
+     * exactly like {@code chat}: an API_KEY-mode site requires a key, PUBLIC sites
+     * are open. Admin endpoints (resolved by id, or {@code names} / {@code console})
+     * never match a real site name and so are never gated.
      */
     private static final Pattern PUBLIC_SN_PATH = Pattern.compile(
-            "^/api/sn/([^/]+)/(?:ac|search|_search|click|query|chat)(?:/.*)?$");
+            "^/api/sn/([^/]+)/(?:ac|search|_search|click|query|chat|copilot)(?:/.*)?$");
 
     /** Spell-check carries an extra locale segment: {@code /api/sn/{site}/{locale}/spell-check}. */
     private static final Pattern SPELL_CHECK_PATH = Pattern.compile(
             "^/api/sn/([^/]+)/[^/]+/spell-check$");
+
+    /**
+     * T634 — the anonymous persona content-fit endpoint
+     * {@code /api/sn/{site}/persona/{personaId}/content-fit}. Gated exactly like
+     * chat because it is an LLM-cost surface: an API_KEY-mode site requires a key.
+     */
+    private static final Pattern CONTENT_FIT_PATH = Pattern.compile(
+            "^/api/sn/([^/]+)/persona/[^/]+/content-fit$");
 
     private final TurSNSiteRepository turSNSiteRepository;
     private final TurDevTokenRepository turDevTokenRepository;
@@ -134,6 +140,10 @@ public class TurSNSiteApiKeyGateFilter extends OncePerRequestFilter {
         if (matcher.matches()) {
             return matcher.group(1);
         }
+        matcher = CONTENT_FIT_PATH.matcher(uri);
+        if (matcher.matches()) {
+            return matcher.group(1);
+        }
         return null;
     }
 
@@ -145,11 +155,14 @@ public class TurSNSiteApiKeyGateFilter extends OncePerRequestFilter {
     }
 
     private boolean hasValidApiKey(HttpServletRequest request) {
+        // T646 / §XXXVII.8 — header only: the `?apiKey=` query-parameter path was
+        // dropped because a secret in the URL lands in access logs / Referer /
+        // browser history. Clients must send the key in the `Key` header. The
+        // token must also be enabled and unexpired.
         String key = request.getHeader(TurAuthTokenHeaderFilter.KEY);
-        if (key == null || key.isBlank()) {
-            key = request.getParameter(API_KEY_PARAM);
-        }
         return key != null && !key.isBlank()
-                && turDevTokenRepository.findByToken(key.trim()).isPresent();
+                && turDevTokenRepository.findByToken(key.trim())
+                        .filter(com.viglet.turing.persistence.model.dev.token.TurDevToken::isUsable)
+                        .isPresent();
     }
 }

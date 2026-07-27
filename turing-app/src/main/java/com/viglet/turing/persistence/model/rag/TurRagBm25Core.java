@@ -12,11 +12,12 @@ package com.viglet.turing.persistence.model.rag;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Locale;
 
 import com.viglet.turing.persistence.model.se.TurSEInstance;
 import com.viglet.turing.persistence.model.store.TurStoreInstance;
-import com.viglet.turing.persistence.utils.TurAssignableUuidGenerator;
+import com.viglet.core.jpa.VigletAssignableUuidGenerator;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -92,7 +93,7 @@ public class TurRagBm25Core implements Serializable {
     private static final long serialVersionUID = 1L;
 
     @Id
-    @TurAssignableUuidGenerator
+    @VigletAssignableUuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
     private String id;
 
@@ -158,7 +159,7 @@ public class TurRagBm25Core implements Serializable {
 
     @PrePersist
     void prePersist() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
         if (this.createdAt == null) {
             this.createdAt = now;
         }
@@ -167,7 +168,7 @@ public class TurRagBm25Core implements Serializable {
 
     @PreUpdate
     void preUpdate() {
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = LocalDateTime.now(ZoneId.systemDefault());
     }
 
     /**

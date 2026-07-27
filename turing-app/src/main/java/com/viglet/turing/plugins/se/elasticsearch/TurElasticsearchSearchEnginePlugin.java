@@ -17,8 +17,11 @@
 package com.viglet.turing.plugins.se.elasticsearch;
 
 import com.viglet.turing.commons.se.field.TurSEFieldType;
+import com.viglet.turing.commons.se.similar.TurSESimilarResult;
+import com.viglet.turing.commons.sn.field.TurSNFieldName;
 import com.viglet.turing.commons.sn.search.TurSNSiteSearchContext;
 import com.viglet.turing.elasticsearch.TurElasticsearch;
+import com.viglet.turing.elasticsearch.TurElasticsearchInstance;
 import com.viglet.turing.elasticsearch.TurElasticsearchInstanceProcess;
 import com.viglet.turing.elasticsearch.TurElasticsearchUtils;
 import com.viglet.turing.persistence.model.se.TurSEInstance;
@@ -27,11 +30,14 @@ import com.viglet.turing.persistence.model.sn.field.TurSNSiteFieldExt;
 import com.viglet.turing.persistence.model.sn.locale.TurSNSiteLocale;
 import com.viglet.turing.persistence.repository.sn.field.TurSNSiteFieldExtRepository;
 import com.viglet.turing.plugins.se.TurSearchEnginePlugin;
+import com.viglet.turing.plugins.se.TurSESynonymApplyResult;
+import com.viglet.turing.plugins.se.TurSESynonymRule;
 import com.viglet.turing.se.result.TurSEResults;
 import com.viglet.turing.solr.bean.TurSECoreInfo;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -49,6 +55,15 @@ import java.util.stream.Collectors;
 @Slf4j
 @Component
 public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin {
+
+    // --- S1192: extracted duplicated literals ---
+    private static final String CONTENT = "content";
+    private static final String ASSET_ID = "assetId";
+    private static final String SOURCE_FILE = "sourceFile";
+    private static final String CHUNK_INDEX = "chunkIndex";
+    private static final String LABEL = "label";
+    private static final String STATUS = "status";
+
 
     private final TurElasticsearch turElasticsearch;
     private final TurElasticsearchInstanceProcess turElasticsearchInstanceProcess;
@@ -150,6 +165,42 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
         return false; // Elasticsearch is schema-less
     }
 
+    // ---- Synonyms (T664 / §XXXIX, Block AP) ------------------------------
+
+    /**
+     * Base name for the per-locale ES synonyms set. The index's search analyzer
+     * must reference it via a {@code synonym_graph} filter with
+     * {@code synonyms_set="turing_<locale>"} and {@code updateable: true} for the
+     * push to take effect at query time.
+     */
+    private static final String SYNONYM_SET_BASE = "turing";
+
+    @Override
+    public boolean supportsSynonyms() {
+        return true;
+    }
+
+    @Override
+    public TurSESynonymApplyResult applySynonyms(TurSEInstance seInstance, String indexName,
+            Locale locale, List<TurSESynonymRule> rules) {
+        TurElasticsearchSynonymRules built = TurElasticsearchSynonymRulesBuilder.build(rules);
+        List<String> warnings = new ArrayList<>(built.warnings());
+        int applied = built.appliedRules();
+
+        if (!built.ruleLines().isEmpty()) {
+            String setId = TurElasticsearchSynonymRulesBuilder.synonymSetId(SYNONYM_SET_BASE, locale);
+            boolean pushed = TurElasticsearchUtils.putSynonymSet(seInstance.getEndpointUrl(), setId,
+                    built.ruleLines());
+            if (!pushed) {
+                warnings.add("Elasticsearch rejected the synonyms set '" + setId + "'; rules were not "
+                        + "applied. Ensure the index's search analyzer uses a synonym_graph filter with "
+                        + "synonyms_set=\"" + setId + "\" and updateable:true.");
+                applied = 0;
+            }
+        }
+        return new TurSESynonymApplyResult(true, applied, built.unsupportedTypes(), warnings);
+    }
+
     // ---- Document operations ---------------------------------------------
 
     @Override
@@ -227,47 +278,57 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
                 .map(instance -> {
                     co.elastic.clients.elasticsearch.core.BulkRequest.Builder bulk =
                             new co.elastic.clients.elasticsearch.core.BulkRequest.Builder();
-                    int queued = 0;
-                    for (Map<String, Object> attrs : documents) {
-                        String docId = java.util.Optional.ofNullable(attrs.get("id"))
-                                .map(Object::toString).orElse(null);
-                        if (docId == null) {
-                            log.warn("[ES] bulk standalone '{}': skipping doc with no id", indexName);
-                            continue;
-                        }
-                        final String id = docId;
-                        bulk.operations(op -> op.index(idx -> idx
-                                .index(indexName).id(id).document(attrs)));
-                        queued++;
-                    }
+                    int queued = queueBulkOperations(bulk, indexName, documents);
                     if (queued == 0) {
                         return 0;
                     }
                     try {
                         co.elastic.clients.elasticsearch.core.BulkResponse resp =
                                 instance.getClient().bulk(bulk.build());
-                        // The bulk API may partially succeed — only count
-                        // items without an errors flag. resp.errors() is
-                        // the global flag; per-item check is more precise.
-                        if (resp.errors()) {
-                            int ok = 0;
-                            for (var item : resp.items()) {
-                                co.elastic.clients.elasticsearch._types.ErrorCause itemError = item.error();
-                                if (itemError == null) {
-                                    ok++;
-                                } else {
-                                    log.warn("[ES] bulk standalone '{}': item id='{}' failed: {}",
-                                            indexName, item.id(), itemError.reason());
-                                }
-                            }
-                            return ok;
-                        }
-                        return queued;
+                        // The bulk API may partially succeed — only count items
+                        // without an error. resp.errors() is the global flag;
+                        // the per-item check is more precise.
+                        return resp.errors() ? countBulkSuccesses(resp, indexName) : queued;
                     } catch (Exception e) {
                         log.warn("[ES] bulk standalone '{}' failed: {}", indexName, e.getMessage());
                         return 0;
                     }
                 }).orElse(0);
+    }
+
+    /** Queues an index op per document with a non-null id, returning the count queued. */
+    private int queueBulkOperations(co.elastic.clients.elasticsearch.core.BulkRequest.Builder bulk,
+            String indexName, List<Map<String, Object>> documents) {
+        int queued = 0;
+        for (Map<String, Object> attrs : documents) {
+            String docId = java.util.Optional.ofNullable(attrs.get("id"))
+                    .map(Object::toString).orElse(null);
+            if (docId == null) {
+                log.warn("[ES] bulk standalone '{}': skipping doc with no id", indexName);
+                continue;
+            }
+            final String id = docId;
+            bulk.operations(op -> op.index(idx -> idx
+                    .index(indexName).id(id).document(attrs)));
+            queued++;
+        }
+        return queued;
+    }
+
+    /** Counts the bulk items that succeeded, logging each per-item failure. */
+    private int countBulkSuccesses(co.elastic.clients.elasticsearch.core.BulkResponse resp,
+            String indexName) {
+        int ok = 0;
+        for (var item : resp.items()) {
+            co.elastic.clients.elasticsearch._types.ErrorCause itemError = item.error();
+            if (itemError == null) {
+                ok++;
+            } else {
+                log.warn("[ES] bulk standalone '{}': item id='{}' failed: {}",
+                        indexName, item.id(), itemError.reason());
+            }
+        }
+        return ok;
     }
 
     @Override
@@ -346,10 +407,10 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
                                 .index(indexName)
                                 .size(topK)
                                 .source(src -> src
-                                        .filter(f -> f.includes("id", "content",
-                                                "assetId", "chunkIndex", "sourceFile")))
+                                        .filter(f -> f.includes("id", CONTENT,
+                                                ASSET_ID, CHUNK_INDEX, SOURCE_FILE)))
                                 .query(q -> q
-                                        .match(m -> m.field("content").query(query))),
+                                        .match(m -> m.field(CONTENT).query(query))),
                                 mapType);
                         java.util.List<com.viglet.turing.plugins.se.TurSEStandaloneHit> hits =
                                 new java.util.ArrayList<>(resp.hits().hits().size());
@@ -359,16 +420,16 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
                                 continue;
                             }
                             String id = hit.id();
-                            String content = source.get("content") == null
-                                    ? "" : source.get("content").toString();
+                            String content = source.get(CONTENT) == null
+                                    ? "" : source.get(CONTENT).toString();
                             // Extract once into a local so the IDE can prove
                             // the unbox below is null-safe.
                             Double rawScore = hit.score();
                             double score = rawScore == null ? 0.0 : rawScore.doubleValue();
                             Map<String, Object> metadata = new java.util.LinkedHashMap<>();
-                            putIfPresent(metadata, "assetId", source.get("assetId"));
-                            putIfPresent(metadata, "chunkIndex", source.get("chunkIndex"));
-                            putIfPresent(metadata, "sourceFile", source.get("sourceFile"));
+                            putIfPresent(metadata, ASSET_ID, source.get(ASSET_ID));
+                            putIfPresent(metadata, CHUNK_INDEX, source.get(CHUNK_INDEX));
+                            putIfPresent(metadata, SOURCE_FILE, source.get(SOURCE_FILE));
                             hits.add(new com.viglet.turing.plugins.se.TurSEStandaloneHit(
                                     id, content, metadata, score));
                         }
@@ -409,7 +470,7 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
                         var resp = instance.getClient().search(s -> s
                                 .index(indexName)
                                 .size(topK)
-                                .source(src -> src.filter(f -> f.includes("id", "label")))
+                                .source(src -> src.filter(f -> f.includes("id", LABEL)))
                                 .query(q -> q.moreLikeThis(m -> m
                                         .fields(field)
                                         .like(l -> l.text(text))
@@ -422,8 +483,8 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
                                 new java.util.ArrayList<>(resp.hits().hits().size());
                         for (var hit : resp.hits().hits()) {
                             Map<String, Object> source = hit.source();
-                            String label = source != null && source.get("label") != null
-                                    ? source.get("label").toString()
+                            String label = source != null && source.get(LABEL) != null
+                                    ? source.get(LABEL).toString()
                                     : hit.id();
                             Double rawScore = hit.score();
                             double score = rawScore == null ? 0.0 : rawScore.doubleValue();
@@ -436,6 +497,188 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
                         return java.util.List.<com.viglet.turing.plugins.se.TurSEStandaloneHit>of();
                     }
                 }).orElse(List.of());
+    }
+
+    // ---- Similar documents (T384) ----------------------------------------
+
+    private static final List<String> SIMILAR_FIELDS = List.of(
+            TurSNFieldName.ID, TurSNFieldName.TITLE, TurSNFieldName.TYPE, TurSNFieldName.URL,
+            TurSNFieldName.ABSTRACT, TurSNFieldName.TEXT);
+    private static final int SIMILAR_MAX_SEED_CHARS = 1_000;
+
+    @Override
+    public List<TurSESimilarResult> getSimilarDocuments(TurSNSiteLocale siteLocale, String id, int rows) {
+        if (id == null || id.isBlank() || rows < 1) {
+            return List.of();
+        }
+        List<Map<String, Object>> seed = getDocumentsByIds(siteLocale, List.of(id));
+        if (seed.isEmpty()) {
+            return List.of();
+        }
+        String like = similarityText(seed.get(0));
+        if (like.isBlank()) {
+            return List.of();
+        }
+        return turElasticsearchInstanceProcess.initElasticsearchInstance(siteLocale)
+                .map(instance -> searchSimilarDocuments(instance, like, id, rows))
+                .orElse(List.of());
+    }
+
+    private List<TurSESimilarResult> searchSimilarDocuments(TurElasticsearchInstance instance,
+            String like, String id, int rows) {
+        try {
+            var response = instance.getClient().search(s -> s
+                    .index(instance.getIndex())
+                    .size(rows + 1)
+                    .source(src -> src.filter(f -> f.includes(TurSNFieldName.ID,
+                            TurSNFieldName.TITLE, TurSNFieldName.TYPE, TurSNFieldName.URL)))
+                    .query(q -> q.moreLikeThis(m -> m
+                            .fields(TurSNFieldName.TITLE, TurSNFieldName.ABSTRACT,
+                                    TurSNFieldName.TEXT)
+                            .like(l -> l.text(like))
+                            .minTermFreq(1)
+                            .minDocFreq(1)
+                            .minWordLength(3)
+                            .maxQueryTerms(40))),
+                    (java.lang.reflect.Type) Map.class);
+            List<TurSESimilarResult> results = new java.util.ArrayList<>();
+            for (var hit : response.hits().hits()) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> source = (Map<String, Object>) hit.source();
+                String docId = firstString(source, TurSNFieldName.ID, hit.id());
+                if (docId != null && !docId.equals(id)) {
+                    results.add(TurSESimilarResult.builder()
+                            .id(docId)
+                            .title(firstString(source, TurSNFieldName.TITLE, null))
+                            .type(firstString(source, TurSNFieldName.TYPE, null))
+                            .url(firstString(source, TurSNFieldName.URL, null))
+                            .build());
+                    if (results.size() >= rows) {
+                        break;
+                    }
+                }
+            }
+            return results;
+        } catch (Exception e) {
+            log.warn("[Elasticsearch] similar documents for id '{}' failed: {}",
+                    id, e.getMessage());
+            return List.of();
+        }
+    }
+
+    @Override
+    public List<Map<String, Object>> getDocumentsByIds(TurSNSiteLocale siteLocale, List<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        List<String> wanted = ids.stream().filter(s -> s != null && !s.isBlank()).toList();
+        if (wanted.isEmpty()) {
+            return List.of();
+        }
+        return turElasticsearchInstanceProcess.initElasticsearchInstance(siteLocale)
+                .map(instance -> collectDocumentsByIds(instance, wanted))
+                .orElse(List.of());
+    }
+
+    /**
+     * Runs the terms query for {@code wanted} ids and returns the matched
+     * documents in request order (missing ids dropped). Per-call failures are
+     * logged and yield an empty list. Extracted from the {@code .map(...)}
+     * lambda in {@link #getDocumentsByIds} to keep cognitive complexity low.
+     *
+     * @since 2026.3.1
+     */
+    private List<Map<String, Object>> collectDocumentsByIds(TurElasticsearchInstance instance,
+            List<String> wanted) {
+        try {
+            var response = instance.getClient().search(s -> s
+                    .index(instance.getIndex())
+                    .size(wanted.size())
+                    .source(src -> src.filter(f -> f.includes(SIMILAR_FIELDS)))
+                    .query(q -> q.terms(t -> t
+                            .field(TurSNFieldName.ID)
+                            .terms(tt -> tt.value(wanted.stream()
+                                    .map(co.elastic.clients.elasticsearch._types.FieldValue::of)
+                                    .toList())))),
+                    (java.lang.reflect.Type) Map.class);
+            Map<String, Map<String, Object>> byId = new java.util.HashMap<>();
+            for (var hit : response.hits().hits()) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> source = (Map<String, Object>) hit.source();
+                if (source == null) {
+                    continue;
+                }
+                Map<String, Object> fields = extractSimilarFields(source);
+                Object docId = fields.getOrDefault(TurSNFieldName.ID, hit.id());
+                if (docId != null) {
+                    byId.put(docId.toString(), fields);
+                }
+            }
+            List<Map<String, Object>> ordered = new java.util.ArrayList<>();
+            for (String key : wanted) {
+                Map<String, Object> fields = byId.get(key);
+                if (fields != null) {
+                    ordered.add(fields);
+                }
+            }
+            return ordered;
+        } catch (Exception e) {
+            log.warn("[Elasticsearch] getDocumentsByIds failed: {}", e.getMessage());
+            return List.<Map<String, Object>>of();
+        }
+    }
+
+    /**
+     * Projects a raw ES {@code _source} map down to {@link #SIMILAR_FIELDS},
+     * unwrapping single-element collections to their scalar and dropping null
+     * values.
+     *
+     * @since 2026.3.1
+     */
+    private static Map<String, Object> extractSimilarFields(Map<String, Object> source) {
+        Map<String, Object> fields = new LinkedHashMap<>();
+        for (String field : SIMILAR_FIELDS) {
+            Object value = source.get(field);
+            if (value instanceof java.util.Collection<?> col) {
+                value = col.isEmpty() ? null : col.iterator().next();
+            }
+            if (value != null) {
+                fields.put(field, value);
+            }
+        }
+        return fields;
+    }
+
+    private static String similarityText(Map<String, Object> fields) {
+        StringBuilder sb = new StringBuilder();
+        for (String field : List.of(TurSNFieldName.TITLE, TurSNFieldName.ABSTRACT,
+                TurSNFieldName.TEXT)) {
+            Object value = fields.get(field);
+            if (value != null) {
+                String text = value.toString().trim();
+                if (!text.isEmpty()) {
+                    if (!sb.isEmpty()) {
+                        sb.append(' ');
+                    }
+                    sb.append(text);
+                }
+            }
+        }
+        String text = sb.toString().trim();
+        return text.length() > SIMILAR_MAX_SEED_CHARS
+                ? text.substring(0, SIMILAR_MAX_SEED_CHARS)
+                : text;
+    }
+
+    private static String firstString(Map<String, Object> source, String field, String fallback) {
+        if (source == null) {
+            return fallback;
+        }
+        Object value = source.get(field);
+        if (value instanceof java.util.Collection<?> col) {
+            value = col.isEmpty() ? null : col.iterator().next();
+        }
+        return value == null ? fallback : value.toString();
     }
 
     // ---- Content export ---------------------------------------------------
@@ -485,6 +728,22 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
                 .map(turElasticsearch::getDocumentTotal).orElse(0L);
     }
 
+    @Override
+    public long getDocumentCountWithField(TurSNSiteLocale turSNSiteLocale, String fieldName) {
+        return turElasticsearchInstanceProcess.initElasticsearchInstance(turSNSiteLocale)
+                .map(instance -> turElasticsearch.getDocumentTotalWithField(instance, fieldName))
+                .orElse(-1L);
+    }
+
+    @Override
+    public long getDocumentCountWithFieldBelow(TurSNSiteLocale turSNSiteLocale, String fieldName,
+            int threshold) {
+        return turElasticsearchInstanceProcess.initElasticsearchInstance(turSNSiteLocale)
+                .map(instance -> turElasticsearch.getDocumentTotalWithFieldBelow(instance, fieldName,
+                        threshold))
+                .orElse(-1L);
+    }
+
     // ---- System info -----------------------------------------------------
 
     @Override
@@ -507,15 +766,15 @@ public class TurElasticsearchSearchEnginePlugin implements TurSearchEnginePlugin
                 info.put("buildType", version.path("build_type").asText(""));
             }
             info.put("clusterName", root.path("cluster_name").asText(""));
-            info.put("status", "UP");
+            info.put(STATUS, "UP");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("Failed to retrieve Elasticsearch system info: {}", e.getMessage());
-            info.put("status", "DOWN");
+            info.put(STATUS, "DOWN");
             info.put("error", e.getMessage());
         } catch (Exception e) {
             log.warn("Failed to retrieve Elasticsearch system info: {}", e.getMessage());
-            info.put("status", "DOWN");
+            info.put(STATUS, "DOWN");
             info.put("error", e.getMessage());
         }
         return info;

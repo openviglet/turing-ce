@@ -43,7 +43,7 @@ import com.viglet.turing.persistence.repository.agent.TurChatFlowRepository;
  *   <li>Pull every enabled flow on the agent with a non-blank
  *       {@code triggerDescription}.</li>
  *   <li>Group flows by the analyzer the router would pick for each
- *       ({@link TurChatFlowEngineService#analyzerFor}) — PT and EN buckets
+ *       ({@link TurChatFlowTriggerRouter#analyzerFor}) — PT and EN buckets
  *       never compare against each other because the router never scores
  *       them in the same MLT pass.</li>
  *   <li>For each unordered pair {@code (A, B)} in a bucket, tokenize both
@@ -128,25 +128,38 @@ public class TurTriggerConflictService {
         }
         // Group by analyzer so PT/EN pairs do not get compared — the
         // procedural router never scores them together either.
-        Map<Analyzer, List<EligibleFlow>> byAnalyzer = new HashMap<>(2);
-        for (TurChatFlow flow : flows) {
-            if (flow.getEnabled() != 1) {
-                continue;
-            }
-            String description = flow.getTriggerDescription();
-            if (description == null || description.isBlank()) {
-                continue;
-            }
-            Analyzer analyzer = TurChatFlowEngineService.analyzerFor(
-                    flow.getTriggerLanguage(), description);
-            Set<String> tokens = TurChatFlowEngineService.tokenize(description, analyzer);
-            if (tokens.isEmpty()) {
-                continue;
-            }
-            byAnalyzer.computeIfAbsent(analyzer, ignored -> new ArrayList<>())
-                    .add(new EligibleFlow(flow, tokens, analyzer));
-        }
+        Map<Analyzer, List<EligibleFlow>> byAnalyzer = groupEligibleFlows(flows);
 
+        List<TurChatFlowTriggerConflictDto> conflicts = findConflicts(byAnalyzer);
+        conflicts.sort(Comparator
+                .comparingDouble(TurChatFlowTriggerConflictDto::similarity).reversed()
+                .thenComparing(TurChatFlowTriggerConflictDto::flowAId)
+                .thenComparing(TurChatFlowTriggerConflictDto::flowBId));
+        return conflicts;
+    }
+
+    /** Buckets the enabled flows with non-empty trigger tokens by their analyzer. */
+    private Map<Analyzer, List<EligibleFlow>> groupEligibleFlows(List<TurChatFlow> flows) {
+        Map<Analyzer, List<EligibleFlow>> byAnalyzer = HashMap.newHashMap(2);
+        for (TurChatFlow flow : flows) {
+            String description = flow.getTriggerDescription();
+            if (flow.getEnabled() != 1 || description == null || description.isBlank()) {
+                continue;
+            }
+            Analyzer analyzer = TurChatFlowTriggerRouter.analyzerFor(
+                    flow.getTriggerLanguage(), description);
+            Set<String> tokens = TurChatFlowTriggerRouter.tokenize(description, analyzer);
+            if (!tokens.isEmpty()) {
+                byAnalyzer.computeIfAbsent(analyzer, ignored -> new ArrayList<>())
+                        .add(new EligibleFlow(flow, tokens, analyzer));
+            }
+        }
+        return byAnalyzer;
+    }
+
+    /** Scores every same-analyzer flow pair, collecting the ones that conflict. */
+    private List<TurChatFlowTriggerConflictDto> findConflicts(
+            Map<Analyzer, List<EligibleFlow>> byAnalyzer) {
         List<TurChatFlowTriggerConflictDto> conflicts = new ArrayList<>();
         for (List<EligibleFlow> bucket : byAnalyzer.values()) {
             if (bucket.size() < 2) {
@@ -161,10 +174,6 @@ public class TurTriggerConflictService {
                 }
             }
         }
-        conflicts.sort(Comparator
-                .comparingDouble(TurChatFlowTriggerConflictDto::similarity).reversed()
-                .thenComparing(TurChatFlowTriggerConflictDto::flowAId)
-                .thenComparing(TurChatFlowTriggerConflictDto::flowBId));
         return conflicts;
     }
 

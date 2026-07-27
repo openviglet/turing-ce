@@ -16,6 +16,7 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -89,6 +90,10 @@ public class TurMarketplaceAPI {
             return ResponseEntity.ok()
                     .header("Content-Type", "text/markdown; charset=UTF-8")
                     .body(new String(body, java.nio.charset.StandardCharsets.UTF_8));
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.warn("Interrupted fetching README from '{}': {}", url, ie.getMessage());
+            return ResponseEntity.status(502).body("Could not load README: " + ie.getMessage());
         } catch (Exception e) {
             log.warn("Could not fetch README from '{}': {}", url, e.getMessage());
             return ResponseEntity.status(502).body("Could not load README: " + e.getMessage());
@@ -131,6 +136,11 @@ public class TurMarketplaceAPI {
                 return ResponseEntity.badRequest().body(result);
             }
             return ResponseEntity.ok(result);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted importing marketplace URL '{}': {}", downloadUrl, ie.getMessage(), ie);
+            return ResponseEntity.internalServerError()
+                    .body(TurImportExchange.ImportResult.error(ie.getMessage()));
         } catch (Exception e) {
             log.error("Marketplace import failed for URL '{}': {}", downloadUrl, e.getMessage(), e);
             return ResponseEntity.internalServerError()
@@ -142,38 +152,40 @@ public class TurMarketplaceAPI {
     @GetMapping(value = "/import/progress/{taskId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter importProgress(@PathVariable String taskId) {
         SseEmitter emitter = new SseEmitter(600_000L);
-        Thread.ofVirtual().start(() -> {
-            try {
-                boolean completed = false;
-                while (!completed) {
-                    var progress = contentExchangeService.getProgress(taskId);
-                    if (progress.isPresent()) {
-                        var p = progress.get();
-                        emitter.send(SseEmitter.event()
-                                .name("progress")
-                                .data(Map.of(
-                                        "totalDocuments", p.totalDocuments(),
-                                        "processedDocuments", p.processedDocuments(),
-                                        "percentage", p.percentage(),
-                                        "currentLocale", p.currentLocale(),
-                                        "phase", p.phase(),
-                                        "estimatedRemainingMillis", p.estimatedRemainingMillis()
-                                )));
-                        if ("completed".equals(p.phase())) {
-                            completed = true;
-                            contentExchangeService.removeProgress(taskId);
-                        }
-                    }
-                    if (!completed) {
-                        Thread.sleep(500);
+        Thread.ofVirtual().start(() -> streamProgress(taskId, emitter));
+        return emitter;
+    }
+
+    private void streamProgress(String taskId, SseEmitter emitter) {
+        try {
+            while (true) {
+                var progress = contentExchangeService.getProgress(taskId);
+                if (progress.isPresent()) {
+                    var p = progress.get();
+                    emitter.send(SseEmitter.event()
+                            .name("progress")
+                            .data(Map.of(
+                                    "totalDocuments", p.totalDocuments(),
+                                    "processedDocuments", p.processedDocuments(),
+                                    "percentage", p.percentage(),
+                                    "currentLocale", p.currentLocale(),
+                                    "phase", p.phase(),
+                                    "estimatedRemainingMillis", p.estimatedRemainingMillis()
+                            )));
+                    if ("completed".equals(p.phase())) {
+                        contentExchangeService.removeProgress(taskId);
+                        break;
                     }
                 }
-                emitter.complete();
-            } catch (Exception e) {
-                emitter.completeWithError(e);
+                Thread.sleep(500);
             }
-        });
-        return emitter;
+            emitter.complete();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            emitter.completeWithError(e);
+        } catch (Exception e) {
+            emitter.completeWithError(e);
+        }
     }
 
     /**
@@ -194,6 +206,11 @@ public class TurMarketplaceAPI {
             var multipartFile = new MockMultipartFile("file", "marketplace.zip",
                     "application/zip", zipBytes);
             return ResponseEntity.ok(turImportExchange.checkZip(multipartFile));
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.error("Interrupted inspecting marketplace URL '{}': {}", downloadUrl, ie.getMessage(), ie);
+            return ResponseEntity.internalServerError()
+                    .body(java.util.Map.of("error", ie.getMessage()));
         } catch (Exception e) {
             log.error("Marketplace inspect failed for URL '{}': {}", downloadUrl, e.getMessage(), e);
             return ResponseEntity.internalServerError()
@@ -213,6 +230,10 @@ public class TurMarketplaceAPI {
             try {
                 byte[] body = downloadUrl(marketplace.getUrl());
                 return mapper.readValue(body, new TypeReference<>() {});
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted fetching external marketplace catalog from '{}', falling back to bundled: {}",
+                        marketplace.getUrl(), ie.getMessage());
             } catch (Exception e) {
                 log.warn("Could not fetch external marketplace catalog from '{}', falling back to bundled: {}",
                         marketplace.getUrl(), e.getMessage());
@@ -230,7 +251,7 @@ public class TurMarketplaceAPI {
         }
     }
 
-    private byte[] downloadUrl(String url) throws Exception {
+    private byte[] downloadUrl(String url) throws IOException, InterruptedException {
         try (HttpClient client = HttpClient.newHttpClient()) {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(url))
@@ -239,13 +260,13 @@ public class TurMarketplaceAPI {
                     .build();
             HttpResponse<byte[]> response = client.send(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() != 200) {
-                throw new RuntimeException("HTTP " + response.statusCode());
+                throw new IOException("HTTP " + response.statusCode());
             }
             return response.body();
         }
     }
 
-    private byte[] downloadZip(String url) throws Exception {
+    private byte[] downloadZip(String url) throws IOException, InterruptedException {
         return downloadUrl(url);
     }
 }

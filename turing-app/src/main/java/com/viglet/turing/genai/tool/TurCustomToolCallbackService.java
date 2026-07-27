@@ -30,8 +30,8 @@ import org.springframework.stereotype.Service;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.viglet.turing.domain.customtool.TurCustomToolDomain;
-import com.viglet.turing.domain.customtool.TurCustomToolRepositoryPort;
 import com.viglet.turing.genai.TurAgentChatExecutor;
+import com.viglet.turing.persistence.adapter.customtool.TurCustomToolReader;
 import com.viglet.turing.persistence.model.customtool.TurCustomTool;
 import com.viglet.turing.persistence.repository.agent.TurAIAgentRepository;
 import com.viglet.turing.persistence.repository.agent.TurChatFlowStateRepository;
@@ -153,7 +153,21 @@ public class TurCustomToolCallbackService {
      */
     public static final String TOOL_CONTEXT_RAG_SOURCES = "turing.ragSources";
 
-    private final TurCustomToolRepositoryPort repositoryPort;
+    /**
+     * T427 / T436 — key under which the chat executor publishes a
+     * {@link TurToolCallCollector} so {@link TurLoggingToolCallback} records each
+     * tool invocation (name, redacted arg digest, latency, ok/err). The
+     * streaming dispatcher drains it after the tool-execution loop into the
+     * per-conversation trace store (T427) and, when the agent opts into
+     * {@code toolCallEventsEnabled}, attaches a live listener that streams each
+     * call as a {@code "tool_call"} SSE event (T436). Absent → no trace, no live
+     * events (legacy callers / unit tests).
+     *
+     * @since 2026.3.4
+     */
+    public static final String TOOL_CONTEXT_TOOL_CALLS = "turing.toolCalls";
+
+    private final TurCustomToolReader reader;
     private final TurCustomToolSearchHelper searchHelper;
     private final TurChatFlowStateRepository stateRepository;
     private final com.viglet.turing.service.chatslots.TurChatSlotEventBus slotEventBus;
@@ -164,10 +178,11 @@ public class TurCustomToolCallbackService {
     private final TurAIAgentRepository agentRepository;
     private final TurLLMInstanceRepository llmRepository;
     private final com.viglet.turing.genai.workspace.TurAgentWorkspace agentWorkspace;
+    private final TurMcpToolCallbackService mcpToolCallbackService;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ConcurrentHashMap<String, CachedScript> scriptCache = new ConcurrentHashMap<>();
 
-    public TurCustomToolCallbackService(TurCustomToolRepositoryPort repositoryPort,
+    public TurCustomToolCallbackService(TurCustomToolReader reader,
             TurCustomToolSearchHelper searchHelper,
             TurChatFlowStateRepository stateRepository,
             com.viglet.turing.service.chatslots.TurChatSlotEventBus slotEventBus,
@@ -181,8 +196,9 @@ public class TurCustomToolCallbackService {
             @Lazy TurAgentChatExecutor agentChatExecutor,
             TurAIAgentRepository agentRepository,
             TurLLMInstanceRepository llmRepository,
-            com.viglet.turing.genai.workspace.TurAgentWorkspace agentWorkspace) {
-        this.repositoryPort = repositoryPort;
+            com.viglet.turing.genai.workspace.TurAgentWorkspace agentWorkspace,
+            TurMcpToolCallbackService mcpToolCallbackService) {
+        this.reader = reader;
         this.searchHelper = searchHelper;
         this.stateRepository = stateRepository;
         this.slotEventBus = slotEventBus;
@@ -193,6 +209,7 @@ public class TurCustomToolCallbackService {
         this.agentRepository = agentRepository;
         this.llmRepository = llmRepository;
         this.agentWorkspace = agentWorkspace;
+        this.mcpToolCallbackService = mcpToolCallbackService;
     }
 
     /**
@@ -210,7 +227,7 @@ public class TurCustomToolCallbackService {
                 .map(TurCustomTool::getId)
                 .collect(Collectors.toSet());
 
-        return repositoryPort.findAllEnabled().stream()
+        return reader.findAllEnabled().stream()
                 .filter(t -> allowedIds.contains(t.id()))
                 .map(this::buildCallback)
                 .toArray(ToolCallback[]::new);
@@ -218,7 +235,7 @@ public class TurCustomToolCallbackService {
 
     /** All enabled custom tool callbacks across the platform. */
     public ToolCallback[] getToolCallbacks() {
-        return repositoryPort.findAllEnabled().stream()
+        return reader.findAllEnabled().stream()
                 .map(this::buildCallback)
                 .toArray(ToolCallback[]::new);
     }
@@ -288,7 +305,7 @@ public class TurCustomToolCallbackService {
         }
         GroovyShell shell = new GroovyShell();
         String source = sanitizeGroovySource(tool.groovyScript() == null ? "" : tool.groovyScript());
-        Class<? extends Script> clazz = (Class<? extends Script>) shell.getClassLoader().parseClass(
+        Class<? extends Script> clazz = shell.getClassLoader().parseClass(
                 source,
                 "TurCustomTool_" + id + ".groovy");
         CachedScript fresh = new CachedScript(clazz, hash);
@@ -312,9 +329,12 @@ public class TurCustomToolCallbackService {
      * exactly {@code \U}, which is what the Python sandbox needs. The
      * lexer is happy because the offending token never appears.
      *
-     * <p>Reproduced by {@link com.viglet.turing.genai.tool.TurCustomToolGroovyParserBugTest}.
+     * <p>Reproduced by {@code TurCustomToolGroovyParserBugTest}.
+     *
+     * <p>Public so the Groovy eval-grader engine (T589) can reuse the exact same
+     * source sanitization as the Custom Tool sandbox.
      */
-    static String sanitizeGroovySource(String src) {
+    public static String sanitizeGroovySource(String src) {
         if (src == null || src.isEmpty() || src.indexOf("\\U") < 0) {
             return src == null ? "" : src;
         }
@@ -458,6 +478,12 @@ public class TurCustomToolCallbackService {
         // the bytes touching the prompt. No-op mode when tenant context absent.
         binding.setVariable("workspace",
                 new TurCustomToolWorkspaceHelper(agentWorkspace, tenantAgentId, tenantConversationId));
+        // T425 / §XXI.1 — `mcp`: call the tools of an MCP server attached to this
+        // agent (e.g. mcp.call("dspace_search_items", [query: term])), reusing
+        // that one integration instead of a parallel direct-REST call to the same
+        // backend. No-op when there's no agent context / no attached servers.
+        binding.setVariable("mcp",
+                new TurCustomToolMcpHelper(mcpToolCallbackService, agentRepository, tenantAgentId, objectMapper));
         Script script = scriptClass.getDeclaredConstructor().newInstance();
         script.setBinding(binding);
         Object result = script.run();
@@ -478,9 +504,6 @@ public class TurCustomToolCallbackService {
             return null;
         }
         Map<String, Object> ctx = toolContext.getContext();
-        if (ctx == null) {
-            return null;
-        }
         Object value = ctx.get(TOOL_CONTEXT_USERNAME);
         if (value == null) {
             return null;
@@ -500,9 +523,6 @@ public class TurCustomToolCallbackService {
             return null;
         }
         Map<String, Object> ctx = toolContext.getContext();
-        if (ctx == null) {
-            return null;
-        }
         Object value = ctx.get(TOOL_CONTEXT_CONVERSATION_ID);
         return value == null ? null : value.toString();
     }
@@ -517,7 +537,6 @@ public class TurCustomToolCallbackService {
     private static String resolveAgentPythonRequirements(ToolContext toolContext) {
         if (toolContext == null) return null;
         Map<String, Object> ctx = toolContext.getContext();
-        if (ctx == null) return null;
         Object value = ctx.get(TOOL_CONTEXT_AGENT_PYTHON_REQUIREMENTS);
         if (value == null) return null;
         String text = value.toString();
@@ -533,7 +552,6 @@ public class TurCustomToolCallbackService {
     private static String resolveAgentId(ToolContext toolContext) {
         if (toolContext == null) return null;
         Map<String, Object> ctx = toolContext.getContext();
-        if (ctx == null) return null;
         Object value = ctx.get(TOOL_CONTEXT_AGENT_ID);
         if (value == null) return null;
         String text = value.toString();
@@ -551,7 +569,6 @@ public class TurCustomToolCallbackService {
     private static int resolveAgentInvokeDepth(ToolContext toolContext) {
         if (toolContext == null) return 0;
         Map<String, Object> ctx = toolContext.getContext();
-        if (ctx == null) return 0;
         Object value = ctx.get(TOOL_CONTEXT_AGENT_INVOKE_DEPTH);
         if (value == null) return 0;
         if (value instanceof Number n) return Math.max(0, n.intValue());
@@ -709,7 +726,7 @@ public class TurCustomToolCallbackService {
         }
         String sanitized = title.trim().toLowerCase()
                 .replaceAll("[^a-z0-9_]+", "_")
-                .replaceAll("^_+|_+$", "");
+                .replaceAll("^_+", "").replaceAll("_+$", "");
         return sanitized.isEmpty() ? "custom_tool" : sanitized;
     }
 }

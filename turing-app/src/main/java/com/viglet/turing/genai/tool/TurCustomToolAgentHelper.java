@@ -15,6 +15,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import com.viglet.turing.genai.TurAgentChatExecutor;
+import com.viglet.turing.genai.TurAgentChatRequest;
 import com.viglet.turing.persistence.model.agent.TurAIAgent;
 import com.viglet.turing.persistence.model.llm.TurLLMInstance;
 import com.viglet.turing.persistence.repository.agent.TurAIAgentRepository;
@@ -159,15 +160,7 @@ public class TurCustomToolAgentHelper {
 
         TurLLMInstance llm = resolveLlm(target, opts);
         if (llm == null) {
-            if (target.getLlmInstances() == null || target.getLlmInstances().isEmpty()) {
-                return "[agent.invoke: agent has no LLM configured]";
-            }
-            // The opts.llmInstanceId either didn't resolve or wasn't allowed.
-            Object requested = opts == null ? null : opts.get("llmInstanceId");
-            if (requested != null) {
-                return "[agent.invoke: llm not allowed for agent: " + requested + "]";
-            }
-            return "[agent.invoke: llm not found]";
+            return llmNotResolvedMessage(target, opts);
         }
 
         long timeoutMs = resolveTimeoutMs(opts);
@@ -181,6 +174,25 @@ public class TurCustomToolAgentHelper {
                 ? message
                 : "[__parentConversationId=" + parentConversationId + "]\n" + message;
 
+        return runChildAgent(target, llm, wireMessage, childConversationId, timeoutMs, agentId);
+    }
+
+    /** Diagnostic message for why {@code resolveLlm} returned null (no LLM, or a disallowed one). */
+    private String llmNotResolvedMessage(TurAIAgent target, Map<String, ?> opts) {
+        if (target.getLlmInstances() == null || target.getLlmInstances().isEmpty()) {
+            return "[agent.invoke: agent has no LLM configured]";
+        }
+        // The opts.llmInstanceId either didn't resolve or wasn't allowed.
+        Object requested = opts == null ? null : opts.get("llmInstanceId");
+        if (requested != null) {
+            return "[agent.invoke: llm not allowed for agent: " + requested + "]";
+        }
+        return "[agent.invoke: llm not found]";
+    }
+
+    /** Runs the child agent's chat to completion (bounded by {@code timeoutMs}) and returns its text. */
+    private String runChildAgent(TurAIAgent target, TurLLMInstance llm, String wireMessage,
+            String childConversationId, long timeoutMs, String agentId) {
         var history = List.of(new TurAgentChatExecutor.ChatMessageItem("user", wireMessage));
 
         log.info("[agent.invoke] depth={} target={} llm={} childConv={} parentConv={}",
@@ -188,9 +200,10 @@ public class TurCustomToolAgentHelper {
 
         try {
             List<TurAgentChatExecutor.ChatResponse> all = executor.execute(
-                            target, llm, history, null,
-                            childConversationId, /* flowId= */ null,
-                            /* files= */ null, /* agentInvokeDepth= */ currentDepth)
+                            new TurAgentChatRequest(target, llm, history, null,
+                                    childConversationId, /* flowId= */ null, /* files= */ null,
+                                    /* requestPersonaId= */ null),
+                            /* agentInvokeDepth= */ currentDepth)
                     .collectList()
                     .block(Duration.ofMillis(timeoutMs));
 
@@ -259,18 +272,17 @@ public class TurCustomToolAgentHelper {
         if (opts == null) return DEFAULT_TIMEOUT_MS;
         Object raw = opts.get("timeout");
         if (raw == null) return DEFAULT_TIMEOUT_MS;
-        long requested;
-        if (raw instanceof Number n) {
-            requested = n.longValue();
-        } else if (raw instanceof String s) {
-            try {
-                requested = Long.parseLong(s.trim());
-            } catch (NumberFormatException e) {
-                return DEFAULT_TIMEOUT_MS;
+        long requested = switch (raw) {
+            case Number n -> n.longValue();
+            case String s -> {
+                try {
+                    yield Long.parseLong(s.trim());
+                } catch (NumberFormatException e) {
+                    yield 0L; // unparseable → falls through to the default below
+                }
             }
-        } else {
-            return DEFAULT_TIMEOUT_MS;
-        }
+            default -> 0L;
+        };
         if (requested <= 0) return DEFAULT_TIMEOUT_MS;
         return Math.min(requested, MAX_TIMEOUT_MS);
     }

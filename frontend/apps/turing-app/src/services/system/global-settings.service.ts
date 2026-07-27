@@ -69,4 +69,42 @@ export class TurGlobalSettingsService {
     }>("/system/global-settings/code-interpreter/docker/status");
     return response.data;
   }
+
+  /**
+   * T688 — probes whether the ffmpeg toolchain is reachable from the server,
+   * so the admin can confirm large-audio transcription chunking will work.
+   * Small clips never need ffmpeg. Returns availability + the ffmpeg version
+   * banner (or an error string when unavailable).
+   */
+  async getFfmpegStatus(): Promise<{
+    available: boolean;
+    version: string | null;
+    error: string | null;
+  }> {
+    const response = await axios.get<{
+      available: boolean;
+      version: string | null;
+      error: string | null;
+    }>("/system/global-settings/transcription/ffmpeg/status");
+    return response.data;
+  }
+
+  /**
+   * T739 — probes whether the configured browserless sidecar is reachable, so
+   * the admin can validate it before switching the URL-fetch mode to HEADLESS /
+   * AUTO. Returns availability + the reported browser version (or an error
+   * string when unavailable). Nothing sensitive crosses the wire.
+   */
+  async getBrowserlessStatus(): Promise<{
+    available: boolean;
+    version: string | null;
+    error: string | null;
+  }> {
+    const response = await axios.get<{
+      available: boolean;
+      version: string | null;
+      error: string | null;
+    }>("/system/global-settings/url-fetch/browserless/status");
+    return response.data;
+  }
 }

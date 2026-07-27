@@ -165,6 +165,20 @@ public final class TurMeterNames {
     public static final String STAGE_CHAT_SETUP_TOOLS = "chat.setup.tools";
     public static final String STAGE_CHAT_SETUP_COMPOSE = "chat.setup.compose";
 
+    // ---- Cost-attribution stages (T289 / §XVI.1) -------------------------
+    //
+    // Coarse stage tags stamped on each per-turn cost sample
+    // ({@code TurLLMTokenUsage.stage}) so the Block L spend dashboard can
+    // split live, user-facing turns from background (insights / summaries /
+    // memory compression / scheduled reports) and skill sub-loops.
+
+    /** User-facing chat turn (agent executor, semantic navigation, direct chat). */
+    public static final String STAGE_CHAT_LIVE = "chat.live";
+    /** Background LLM work: insights, summaries, memory compression, scheduled reports. */
+    public static final String STAGE_CHAT_BACKGROUND = "chat.background";
+    /** Skill sub-loop turns (delegated, always on the Default LLM). */
+    public static final String STAGE_CHAT_SKILL = "chat.skill";
+
     // ---- Cache stats & retrieval (T32 / §IV.7) ---------------------------
 
     /**
@@ -252,6 +266,57 @@ public final class TurMeterNames {
      * @since 2026.3.1
      */
     public static final String CHAT_TOOL_PREFILTER_BYPASS = "turing.chat.tool.prefilter.bypass";
+
+    // ---- Context-engineering metrics (T124 / §IX.7.b) --------------------
+    //
+    // Counters + a ratio summary that make the three context-engineering
+    // levers (workspace offload, tool-result offload, memory compression)
+    // observable per deployment, so operators can see how much context is
+    // being kept out of the prompt and how well compression is paying off.
+
+    /**
+     * Counter — number of {@code TurAgentWorkspace.put(...)} calls (one per
+     * artifact written to a conversation workspace). Pairs with
+     * {@link #CHAT_WORKSPACE_BYTES} to derive average artifact size.
+     *
+     * @since 2026.3.1
+     */
+    public static final String CHAT_WORKSPACE_PUTS = "turing.chat.workspace.puts";
+
+    /**
+     * Counter — number of successful {@code TurAgentWorkspace.get(...)} reads
+     * (blob present). Misses are not counted.
+     *
+     * @since 2026.3.1
+     */
+    public static final String CHAT_WORKSPACE_GETS = "turing.chat.workspace.gets";
+
+    /**
+     * Counter — total bytes written to conversation workspaces (incremented
+     * by the payload length on every {@code put}).
+     *
+     * @since 2026.3.1
+     */
+    public static final String CHAT_WORKSPACE_BYTES = "turing.chat.workspace.bytes_stored";
+
+    /**
+     * Distribution summary — compressed/original character ratio of each
+     * memory-compression summary (T115) and budget-driven prompt compaction
+     * (T123). Lower is better; a ratio near 1.0 means compression isn't
+     * buying much.
+     *
+     * @since 2026.3.1
+     */
+    public static final String CHAT_MEMORY_COMPRESSION_RATIO = "turing.chat.memory.compression_ratio";
+
+    /**
+     * Counter — total bytes moved out of the prompt into the workspace by the
+     * T114 large-tool-result offload decorator (incremented by the offloaded
+     * payload length on each successful offload).
+     *
+     * @since 2026.3.1
+     */
+    public static final String CHAT_TOOLS_OFFLOADED_BYTES = "turing.chat.tools.offloaded_bytes";
 
     // ---- Tag values for the T30 / T29 outcomes ---------------------------
 

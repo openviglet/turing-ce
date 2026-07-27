@@ -52,6 +52,9 @@ class TurAssetTrainingServiceTest {
         private TurAssetTrainingRecordRepository trainingRecordRepository;
 
         @Mock
+        private com.viglet.turing.genai.ocr.TurMistralOcrService mistralOcrService;
+
+        @Mock
         private RagInfrastructure ragInfrastructure;
 
         private TurAssetTrainingService service;
@@ -62,7 +65,8 @@ class TurAssetTrainingServiceTest {
                                 storageService,
                                 globalSettingsService,
                                 ragContextBuilder,
-                                trainingRecordRepository);
+                                trainingRecordRepository,
+                                mistralOcrService);
         }
 
         @Test
@@ -130,9 +134,10 @@ class TurAssetTrainingServiceTest {
 
                 var result = service.getTrainedAtMap(List.of("trained.pdf", "untrained.pdf"));
 
-                assertThat(result).hasSize(1);
-                assertThat(result).containsKey("trained.pdf");
-                assertThat(result).doesNotContainKey("untrained.pdf");
+                assertThat(result)
+                                .hasSize(1)
+                                .containsKey("trained.pdf")
+                                .doesNotContainKey("untrained.pdf");
         }
 
         @Test
@@ -164,7 +169,7 @@ class TurAssetTrainingServiceTest {
         }
 
         @Test
-        void startTrainingReturnsRunningWhenAlreadyRunning() throws Exception {
+        void startTrainingReturnsRunningWhenAlreadyRunning() {
                 CountDownLatch holdTraining = new CountDownLatch(1);
                 when(globalSettingsService.isRagEnabled()).thenReturn(true);
                 when(ragContextBuilder.buildFromGlobalSettings()).thenAnswer(inv -> {
@@ -212,8 +217,9 @@ class TurAssetTrainingServiceTest {
         void turAssetTrainingStateEnumValues() {
                 TurAssetTrainingState[] values = TurAssetTrainingState.values();
 
-                assertThat(values).hasSize(4);
-                assertThat(values).containsExactly(
+                assertThat(values)
+                                .hasSize(4)
+                                .containsExactly(
                                 TurAssetTrainingState.IDLE,
                                 TurAssetTrainingState.RUNNING,
                                 TurAssetTrainingState.COMPLETED,

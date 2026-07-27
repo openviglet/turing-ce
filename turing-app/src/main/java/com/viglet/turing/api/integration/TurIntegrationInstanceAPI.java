@@ -37,6 +37,7 @@ import com.viglet.turing.persistence.mapper.integration.TurIntegrationInstanceMa
 import com.viglet.turing.persistence.model.integration.TurIntegrationInstance;
 import com.viglet.turing.persistence.repository.integration.TurIntegrationInstanceRepository;
 import com.viglet.turing.spring.utils.TurPersistenceUtils;
+import com.viglet.turing.tenant.TurInfraTenantScope;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -47,18 +48,25 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 public class TurIntegrationInstanceAPI {
 	private final TurIntegrationInstanceRepository turIntegrationInstanceRepository;
 	private final TurIntegrationInstanceMapper turIntegrationInstanceMapper;
+	private final TurInfraTenantScope tenantScope;
 
 	public TurIntegrationInstanceAPI(TurIntegrationInstanceRepository turIntegrationInstanceRepository,
-			TurIntegrationInstanceMapper turIntegrationInstanceMapper) {
+			TurIntegrationInstanceMapper turIntegrationInstanceMapper,
+			TurInfraTenantScope tenantScope) {
 		this.turIntegrationInstanceRepository = turIntegrationInstanceRepository;
 		this.turIntegrationInstanceMapper = turIntegrationInstanceMapper;
+		this.tenantScope = tenantScope;
 	}
 
 	@Operation(summary = "Integration List")
 	@GetMapping
 	public List<TurIntegrationInstanceDto> turIntegrationInstanceList() {
-		return turIntegrationInstanceMapper
-				.toDtoList(this.turIntegrationInstanceRepository.findAll(TurPersistenceUtils.orderByTitleIgnoreCase()));
+		java.util.Comparator<TurIntegrationInstance> byTitle =
+				java.util.Comparator.comparing(TurIntegrationInstance::getTitle, String.CASE_INSENSITIVE_ORDER);
+		return turIntegrationInstanceMapper.toDtoList(tenantScope.visibleList(
+				() -> this.turIntegrationInstanceRepository.findAll(TurPersistenceUtils.orderByTitleIgnoreCase()),
+				tenantId -> this.turIntegrationInstanceRepository.findVisibleToTenant(tenantId)
+						.stream().sorted(byTitle).toList()));
 	}
 
 	@Operation(summary = "Integration structure")
@@ -72,7 +80,7 @@ public class TurIntegrationInstanceAPI {
 	@GetMapping("/{id}")
 	public TurIntegrationInstanceDto turIntegrationInstanceGet(@PathVariable String id) {
 		return turIntegrationInstanceMapper
-				.toDto(this.turIntegrationInstanceRepository.findById(id).orElse(new TurIntegrationInstance()));
+				.toDto(this.turIntegrationInstanceRepository.findById(id).filter(tenantScope::isVisibleToTenant).orElse(new TurIntegrationInstance()));
 	}
 
 	@Operation(summary = "Update a Integration")
@@ -80,7 +88,8 @@ public class TurIntegrationInstanceAPI {
 	public TurIntegrationInstanceDto turIntegrationInstanceUpdate(@PathVariable String id,
 			@RequestBody TurIntegrationInstanceDto turIntegrationInstanceDto) {
 		TurIntegrationInstance source = turIntegrationInstanceMapper.toEntity(turIntegrationInstanceDto);
-		return turIntegrationInstanceRepository.findById(id).map(existing -> {
+		return turIntegrationInstanceRepository.findById(id).filter(tenantScope::isVisibleToTenant).map(existing -> {
+			tenantScope.assertWritable(existing);
 			turIntegrationInstanceMapper.updateEntity(source, existing);
 			turIntegrationInstanceRepository.save(existing);
 			return turIntegrationInstanceMapper.toDto(existing);
@@ -92,7 +101,13 @@ public class TurIntegrationInstanceAPI {
 	@Operation(summary = "Delete a Integration")
 	@DeleteMapping("/{id}")
 	public boolean turIntegrationInstanceDelete(@PathVariable String id) {
-		this.turIntegrationInstanceRepository.delete(id);
+		// T365 — scope the by-id delete: a non-visible id (another tenant's
+		// instance) is treated as not-found, never deleted.
+		this.turIntegrationInstanceRepository.findById(id).filter(tenantScope::isVisibleToTenant)
+				.ifPresent(existing -> {
+					tenantScope.assertWritable(existing);
+					this.turIntegrationInstanceRepository.delete(id);
+				});
 		return true;
 	}
 
@@ -102,6 +117,7 @@ public class TurIntegrationInstanceAPI {
 			@RequestBody TurIntegrationInstanceDto turIntegrationInstanceDto) {
 		TurIntegrationInstance turIntegrationInstance = turIntegrationInstanceMapper
 				.toEntity(turIntegrationInstanceDto);
+		tenantScope.stampOnCreate(turIntegrationInstance);
 		this.turIntegrationInstanceRepository.save(turIntegrationInstance);
 		return turIntegrationInstanceMapper.toDto(turIntegrationInstance);
 

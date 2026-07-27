@@ -9,8 +9,10 @@
  */
 package com.viglet.turing.genai.flow;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -65,6 +67,14 @@ public class TurParkedConversationService {
         this.agentRepository = agentRepository;
     }
 
+    /** Source of "now" for the waiting-time computation; tests pin it. */
+    private Clock clock = Clock.systemDefaultZone();
+
+    /** Visible for testing — pin the clock so waiting times are deterministic. */
+    void setClockForTest(Clock clock) {
+        this.clock = clock;
+    }
+
     /**
      * Every conversation parked on a {@code suspend} node across all flows,
      * sorted by waiting time descending (longest-waiting first) so the
@@ -72,7 +82,7 @@ public class TurParkedConversationService {
      */
     @Transactional(readOnly = true)
     public List<TurParkedConversationDto> listParked() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
         Map<String, String> agentTitleCache = new HashMap<>();
         List<TurParkedConversationDto> out = new ArrayList<>();
 
@@ -83,42 +93,56 @@ public class TurParkedConversationService {
             }
             // Reason text keyed by suspend node id, so the loaded states map
             // straight to their authored label without re-walking the graph.
-            Map<String, String> suspendReasons = new HashMap<>();
-            for (ChatFlowNode node : graph.nodes()) {
-                if ("suspend".equals(node.type())) {
-                    String label = node.label();
-                    suspendReasons.put(node.id(),
-                            label == null || label.isBlank() ? "suspended" : label);
+            Map<String, String> suspendReasons = buildSuspendReasons(graph);
+            if (!suspendReasons.isEmpty()) {
+                List<TurChatFlowState> parked = stateRepository.findByFlow_IdAndCurrentNodeIdIn(
+                        flow.getId(), suspendReasons.keySet());
+                String agentId = flowRepository.findAgentIdByFlowId(flow.getId()).orElse(null);
+                String agentTitle = resolveAgentTitle(agentId, agentTitleCache);
+                for (TurChatFlowState state : parked) {
+                    out.add(toParkedDto(state, flow, agentId, agentTitle, suspendReasons, now));
                 }
-            }
-            if (suspendReasons.isEmpty()) {
-                continue;
-            }
-            List<TurChatFlowState> parked = stateRepository.findByFlow_IdAndCurrentNodeIdIn(
-                    flow.getId(), suspendReasons.keySet());
-            if (parked.isEmpty()) {
-                continue;
-            }
-            String agentId = flowRepository.findAgentIdByFlowId(flow.getId()).orElse(null);
-            String agentTitle = resolveAgentTitle(agentId, agentTitleCache);
-            for (TurChatFlowState state : parked) {
-                LocalDateTime since = state.getUpdatedAt();
-                long waitingSeconds = since == null ? 0L
-                        : Math.max(0L, Duration.between(since, now).getSeconds());
-                out.add(new TurParkedConversationDto(
-                        state.getConversationId(),
-                        agentId,
-                        agentTitle,
-                        flow.getId(),
-                        flow.getName(),
-                        state.getCurrentNodeId(),
-                        suspendReasons.getOrDefault(state.getCurrentNodeId(), "suspended"),
-                        since == null ? null : since.toString(),
-                        waitingSeconds));
             }
         }
         out.sort(Comparator.comparingLong(TurParkedConversationDto::waitingSeconds).reversed());
         return out;
+    }
+
+    /**
+     * Reason text keyed by parked node id (suspend + humanApproval). T119/T121:
+     * both park the cursor and belong on the triage dashboard.
+     */
+    private Map<String, String> buildSuspendReasons(ChatFlowGraph graph) {
+        Map<String, String> suspendReasons = new HashMap<>();
+        for (ChatFlowNode node : graph.nodes()) {
+            if ("suspend".equals(node.type()) || "humanApproval".equals(node.type())) {
+                String label = node.label();
+                String fallback = "humanApproval".equals(node.type())
+                        ? "awaiting approval" : "suspended";
+                suspendReasons.put(node.id(),
+                        label == null || label.isBlank() ? fallback : label);
+            }
+        }
+        return suspendReasons;
+    }
+
+    /** Maps one parked state to its dashboard DTO (computing the waiting duration). */
+    private TurParkedConversationDto toParkedDto(TurChatFlowState state, TurChatFlow flow,
+            String agentId, String agentTitle, Map<String, String> suspendReasons, LocalDateTime now) {
+        LocalDateTime since = state.getUpdatedAt();
+        ZoneId zone = clock.getZone();
+        long waitingSeconds = since == null ? 0L
+                : Math.max(0L, Duration.between(since.atZone(zone), now.atZone(zone)).getSeconds());
+        return new TurParkedConversationDto(
+                state.getConversationId(),
+                agentId,
+                agentTitle,
+                flow.getId(),
+                flow.getName(),
+                state.getCurrentNodeId(),
+                suspendReasons.getOrDefault(state.getCurrentNodeId(), "suspended"),
+                since == null ? null : since.toString(),
+                waitingSeconds);
     }
 
     /** Resolves (and memoizes) the agent title for an id; {@code null}-safe. */

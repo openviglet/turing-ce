@@ -56,6 +56,10 @@ import lombok.extern.slf4j.Slf4j;
 @Service
 public class TurChatAnalyticsService {
 
+    // --- S1192: extracted duplicated literals ---
+    private static final String PARENT_CONVERSATION_ID = "[__parentConversationId=";
+
+
     private final TurChatAnalyticsStore store;
 
     /**
@@ -104,28 +108,17 @@ public class TurChatAnalyticsService {
      * Idempotent — calling twice with the same {@code conversationId} only
      * upserts the start timestamp the first time (the store uses
      * {@code $setOnInsert}-style semantics).
-     */
-    public void recordSessionStart(String conversationId, String agentId, String personaId,
-            String llmInstanceId, String embeddingModelId, String storeInstanceId,
-            String userId, String locale, String firstUserMessage) {
-        recordSessionStart(conversationId, agentId, personaId, llmInstanceId, embeddingModelId,
-                storeInstanceId, userId, locale, firstUserMessage, null, null);
-    }
-
-    /**
-     * T74 overload — also seeds the visitor cohort fields ({@code timezone}
-     * from the {@code X-Timezone} header, {@code deviceType} classified from
-     * the {@code User-Agent}). The chat executor resolves these via
-     * {@link TurChatCohortResolver} on the HTTP thread and passes them in so
-     * the scorecard can slice variants by sub-population. The legacy overload
-     * delegates here with {@code null} cohort fields.
      *
-     * @since 2026.3.1
+     * <p>The session-identity fields travel as a {@link TurChatSessionRefs}
+     * bundle and the T74 cohort fields ({@code timezone} from the
+     * {@code X-Timezone} header, {@code deviceType} classified from the
+     * {@code User-Agent}) as a {@link TurChatVisitorContext}. The chat executor
+     * resolves the cohort via {@link TurChatCohortResolver} on the HTTP thread
+     * and passes it in so the scorecard can slice variants by sub-population;
+     * off-request callers pass {@link TurChatVisitorContext#empty()}.
      */
-    public void recordSessionStart(String conversationId, String agentId, String personaId,
-            String llmInstanceId, String embeddingModelId, String storeInstanceId,
-            String userId, String locale, String firstUserMessage,
-            String timezone, String deviceType) {
+    public void recordSessionStart(TurChatSessionRefs refs, TurChatVisitorContext visitor,
+            String firstUserMessage) {
         if (!store.isEnabled()) return;
         Instant now = Instant.now();
         // T110 — when a Custom Tool's agent.invoke(...) spawns this session,
@@ -135,17 +128,17 @@ public class TurChatAnalyticsService {
         // the visible firstUserMessage stays clean of the audit marker.
         String parentConversationId = extractParentConversationId(firstUserMessage);
         String visibleFirstUserMessage = stripParentConversationIdPrefix(firstUserMessage);
-        inFlight.computeIfAbsent(conversationId,
-                id -> new InFlight(now, agentId, personaId, llmInstanceId,
-                        embeddingModelId, storeInstanceId, userId, locale,
-                        parentConversationId, timezone, deviceType));
+        inFlight.computeIfAbsent(refs.conversationId(),
+                id -> new InFlight(now, refs, visitor, parentConversationId));
         try {
-            store.upsertSession(TurChatSessionEvent.start(conversationId, agentId, personaId,
-                    llmInstanceId, embeddingModelId, storeInstanceId, userId, locale,
-                    visibleFirstUserMessage, now, parentConversationId, timezone, deviceType));
+            store.upsertSession(TurChatSessionEvent.start(refs.conversationId(), refs.agentId(),
+                    refs.personaId(), refs.llmInstanceId(), refs.embeddingModelId(),
+                    refs.storeInstanceId(), refs.userId(), visitor.locale(),
+                    visibleFirstUserMessage, now, parentConversationId,
+                    visitor.timezone(), visitor.deviceType()));
         } catch (RuntimeException e) {
             log.warn("Chat analytics recordSessionStart failed for {}: {}",
-                    conversationId, e.getMessage());
+                    refs.conversationId(), e.getMessage());
         }
     }
 
@@ -161,10 +154,10 @@ public class TurChatAnalyticsService {
     static String extractParentConversationId(String firstUserMessage) {
         if (firstUserMessage == null) return null;
         String s = firstUserMessage;
-        if (!s.startsWith("[__parentConversationId=")) return null;
+        if (!s.startsWith(PARENT_CONVERSATION_ID)) return null;
         int end = s.indexOf(']');
         if (end < 0) return null;
-        String value = s.substring("[__parentConversationId=".length(), end);
+        String value = s.substring(PARENT_CONVERSATION_ID.length(), end);
         return value.isBlank() ? null : value;
     }
 
@@ -176,7 +169,7 @@ public class TurChatAnalyticsService {
      */
     static String stripParentConversationIdPrefix(String firstUserMessage) {
         if (firstUserMessage == null) return null;
-        if (!firstUserMessage.startsWith("[__parentConversationId=")) return firstUserMessage;
+        if (!firstUserMessage.startsWith(PARENT_CONVERSATION_ID)) return firstUserMessage;
         int end = firstUserMessage.indexOf(']');
         if (end < 0) return firstUserMessage;
         // Skip the closing bracket; also skip a single trailing newline
@@ -293,9 +286,7 @@ public class TurChatAnalyticsService {
                 // Hard ceiling — drop without flushing. Should be rare.
                 inFlight.remove(conversationId);
                 forced++;
-                continue;
-            }
-            if (lastTouched < idleCutoff) {
+            } else if (lastTouched < idleCutoff) {
                 try {
                     recordSessionEnd(conversationId, TurChatSessionOutcome.ABANDONED);
                     flushed++;
@@ -322,38 +313,18 @@ public class TurChatAnalyticsService {
         if (!store.isEnabled()) return;
         InFlight inflight = inFlight.remove(conversationId);
         Instant now = Instant.now();
-        Instant startedAt = inflight != null ? inflight.startedAt : null;
-        long durationMs = startedAt != null
-                ? Math.max(0, Duration.between(startedAt, now).toMillis())
-                : 0L;
         try {
-            store.upsertSession(new TurChatSessionEvent(
-                    conversationId,
-                    inflight == null ? null : inflight.agentId,
-                    inflight == null ? null : inflight.personaId,
-                    inflight == null ? null : inflight.llmInstanceId,
-                    inflight == null ? null : inflight.embeddingModelId,
-                    inflight == null ? null : inflight.storeInstanceId,
-                    inflight == null ? null : inflight.userId,
-                    inflight == null ? null : inflight.locale,
-                    null,           // firstUserMessage is start-only and preserved by store
-                    startedAt,
-                    now,
-                    outcome,
-                    inflight == null ? 0  : inflight.turns,
-                    inflight == null ? 0L : inflight.tokensIn,
-                    inflight == null ? 0L : inflight.tokensOut,
-                    durationMs,
-                    inflight == null ? 0  : inflight.toolCalls,
-                    inflight == null ? 0  : inflight.toolErrors,
-                    inflight == null ? 0L : inflight.totalToolLatencyMs,
-                    inflight == null ? null : inflight.experimentKey,
-                    inflight == null ? null : inflight.variantLabel,
-                    inflight == null ? null : inflight.parentConversationId,
-                    inflight == null ? null : inflight.timezone,
-                    inflight == null ? null : inflight.deviceType,
-                    inflight == null ? List.of() : List.copyOf(inflight.toolSamples)));
-            if (inflight != null && inflight.toolCalls > 0) {
+            if (inflight == null) {
+                // No in-flight bag (e.g. server restarted mid-session) — persist a
+                // minimal end event so the conversation isn't lost.
+                store.upsertSession(minimalSessionEvent(conversationId, now, outcome));
+                return;
+            }
+            long durationMs = inflight.startedAt != null
+                    ? Math.max(0, Duration.between(inflight.startedAt, now).toMillis())
+                    : 0L;
+            store.upsertSession(fullSessionEvent(conversationId, inflight, now, outcome, durationMs));
+            if (inflight.toolCalls > 0) {
                 log.info("[ChatAnalytics] session {} tool aggregates: calls={} errors={} totalLatencyMs={}",
                         conversationId, inflight.toolCalls, inflight.toolErrors,
                         inflight.totalToolLatencyMs);
@@ -362,6 +333,33 @@ public class TurChatAnalyticsService {
             log.warn("Chat analytics recordSessionEnd failed for {}: {}",
                     conversationId, e.getMessage());
         }
+    }
+
+    /** End event for a session with no surviving in-flight bag — all aggregates default. */
+    private TurChatSessionEvent minimalSessionEvent(String conversationId, Instant now,
+            TurChatSessionOutcome outcome) {
+        return new TurChatSessionEvent(conversationId,
+                null, null, null, null, null, null, null,
+                null,           // firstUserMessage is start-only and preserved by store
+                null,           // startedAt unknown
+                now, outcome,
+                0, 0L, 0L, 0L, 0, 0, 0L,
+                null, null, null, null, null, List.of());
+    }
+
+    /** End event built from the live in-flight aggregates. */
+    private TurChatSessionEvent fullSessionEvent(String conversationId, InFlight inflight,
+            Instant now, TurChatSessionOutcome outcome, long durationMs) {
+        return new TurChatSessionEvent(conversationId,
+                inflight.refs.agentId(), inflight.refs.personaId(), inflight.refs.llmInstanceId(),
+                inflight.refs.embeddingModelId(), inflight.refs.storeInstanceId(), inflight.refs.userId(),
+                inflight.visitor.locale(),
+                null,           // firstUserMessage is start-only and preserved by store
+                inflight.startedAt, now, outcome,
+                inflight.turns, inflight.tokensIn, inflight.tokensOut, durationMs,
+                inflight.toolCalls, inflight.toolErrors, inflight.totalToolLatencyMs,
+                inflight.experimentKey, inflight.variantLabel, inflight.parentConversationId,
+                inflight.visitor.timezone(), inflight.visitor.deviceType(), List.copyOf(inflight.toolSamples));
     }
 
     /** Pass-through to the store — used by the REST analytics endpoints. */
@@ -382,19 +380,12 @@ public class TurChatAnalyticsService {
     private static final class InFlight {
         final Instant startedAt;
         volatile Instant lastTouchedAt;
-        final String agentId;
-        final String personaId;
-        final String llmInstanceId;
-        final String embeddingModelId;
-        final String storeInstanceId;
-        final String userId;
-        final String locale;
+        /** Configured session identity (agent / persona / LLM / store / user). */
+        final TurChatSessionRefs refs;
+        /** T74 visitor cohort (locale / timezone / deviceType), never null. */
+        final TurChatVisitorContext visitor;
         /** T110 — parent conversation id when spawned by {@code agent.invoke(...)}. */
         final String parentConversationId;
-        /** T74 — visitor cohort: IANA timezone (X-Timezone header), or null. */
-        final String timezone;
-        /** T74 — visitor cohort: device class from User-Agent, or null. */
-        final String deviceType;
         int turns;
         long tokensIn;
         long tokensOut;
@@ -416,21 +407,13 @@ public class TurChatAnalyticsService {
         volatile String experimentKey;
         volatile String variantLabel;
 
-        InFlight(Instant startedAt, String agentId, String personaId, String llmInstanceId,
-                String embeddingModelId, String storeInstanceId, String userId, String locale,
-                String parentConversationId, String timezone, String deviceType) {
+        InFlight(Instant startedAt, TurChatSessionRefs refs, TurChatVisitorContext visitor,
+                String parentConversationId) {
             this.startedAt = startedAt;
             this.lastTouchedAt = startedAt;
-            this.agentId = agentId;
-            this.personaId = personaId;
-            this.llmInstanceId = llmInstanceId;
-            this.embeddingModelId = embeddingModelId;
-            this.storeInstanceId = storeInstanceId;
-            this.userId = userId;
-            this.locale = locale;
+            this.refs = refs;
+            this.visitor = visitor == null ? TurChatVisitorContext.empty() : visitor;
             this.parentConversationId = parentConversationId;
-            this.timezone = timezone;
-            this.deviceType = deviceType;
         }
 
         synchronized void recordTurn(long in, long out) {

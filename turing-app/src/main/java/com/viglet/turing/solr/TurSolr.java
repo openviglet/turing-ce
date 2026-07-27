@@ -12,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.solr.client.solrj.SolrServerException;
@@ -23,6 +24,7 @@ import org.apache.solr.client.solrj.response.QueryResponse;
 import org.apache.solr.client.solrj.response.SpellCheckResponse;
 import org.apache.solr.common.SolrDocument;
 import org.apache.solr.common.SolrDocumentList;
+import org.apache.solr.common.SolrException;
 import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
@@ -60,6 +62,13 @@ import lombok.extern.slf4j.Slf4j;
 @Component
 @Transactional
 public class TurSolr {
+
+    /**
+     * Lucene query-syntax characters that must be escaped in a spellcheck term.
+     * Whitespace and the double-quote (stripped separately) are intentionally excluded.
+     */
+    private static final Pattern SPELL_CHECK_SPECIAL_CHARS =
+            Pattern.compile("[+\\-!(){}\\[\\]^~*?:\\\\/&|]");
 
     private final TurSNSiteRepository turSNSiteRepository;
     private final boolean isCommitEnabled;
@@ -113,6 +122,43 @@ public class TurSolr {
         }
     }
 
+    /**
+     * T388 — counts documents that populate {@code fieldName} using Solr's
+     * {@code field:[* TO *]} existence filter (matches any document with at
+     * least one value for the field, across every field type). Returns
+     * {@code -1} on error so coverage callers can treat it as "unknown".
+     */
+    public long getDocumentTotalWithField(TurSolrInstance turSolrInstance, String fieldName) {
+        try {
+            SolrQuery query = new SolrQuery().setQuery("*:*").setRows(0)
+                    .addFilterQuery(fieldName + ":[* TO *]");
+            return executeSolrQuery(turSolrInstance, query)
+                    .map(queryResponse -> queryResponse.getResults().getNumFound()).orElse(0L);
+        } catch (Exception e) {
+            log.error(e.getMessage(), e);
+            return -1L;
+        }
+    }
+
+    /**
+     * T472 — counts documents whose {@code fieldName} value is strictly below
+     * {@code threshold} using Solr's exclusive-upper range filter
+     * ({@code field:[* TO threshold}}). Returns {@code -1} on error so coverage
+     * callers can treat it as "unknown".
+     */
+    public long getDocumentTotalWithFieldBelow(TurSolrInstance turSolrInstance, String fieldName,
+            int threshold) {
+        try {
+            SolrQuery query = new SolrQuery().setQuery("*:*").setRows(0)
+                    .addFilterQuery(fieldName + ":[* TO " + threshold + "}");
+            return executeSolrQuery(turSolrInstance, query)
+                    .map(queryResponse -> queryResponse.getResults().getNumFound()).orElse(0L);
+        } catch (Exception e) {
+            log.error(e.getMessage(), e);
+            return -1L;
+        }
+    }
+
     public void indexing(TurSolrInstance turSolrInstance, TurSNSite turSNSite,
             Map<String, Object> attributes) {
         turSolrDocumentHandler.indexing(turSolrInstance, turSNSite, attributes);
@@ -150,7 +196,7 @@ public class TurSolr {
 
     public TurSESpellCheckResult spellCheckTerm(TurSolrInstance turSolrInstance, String term) {
         return executeSolrQuery(turSolrInstance, new SolrQuery().setParam("qt", TUR_SPELL)
-                .setQuery(term.replace("\"", EMPTY))).map(
+                .setQuery(escapeSpellCheckTerm(term))).map(
                         queryResponse -> Optional.ofNullable(queryResponse.getSpellCheckResponse())
                                 .map(spellCheckResponse -> {
                                     String correctedText = spellCheckResponse.getCollatedResult();
@@ -160,6 +206,21 @@ public class TurSolr {
                                     return new TurSESpellCheckResult();
                                 }).orElse(new TurSESpellCheckResult()))
                 .orElse(new TurSESpellCheckResult());
+    }
+
+    /**
+     * Sanitizes a term before sending it to the {@code /tur_spell} handler. That
+     * handler uses the default {@code lucene} query parser (no {@code defType}), so an
+     * unescaped {@code :} in the term (e.g. {@code "remuneração: Planejamento"}) is
+     * parsed as a {@code field:value} clause and Solr fails with "undefined field".
+     * Quotes are stripped and the remaining Lucene syntax characters are escaped, while
+     * whitespace is preserved so the spellchecker still analyzes each word.
+     */
+    private static String escapeSpellCheckTerm(String term) {
+        if (StringUtils.isEmpty(term)) {
+            return term;
+        }
+        return SPELL_CHECK_SPECIAL_CHARS.matcher(term.replace("\"", EMPTY)).replaceAll("\\\\$0");
     }
 
     public TurSEResult findById(TurSolrInstance turSolrInstance, TurSNSite turSNSite, String id,
@@ -275,6 +336,10 @@ public class TurSolr {
             return Optional.ofNullable(response);
         } catch (SolrServerException | IOException e) {
             logSolrException(query, e, false);
+        } catch (SolrException e) {
+            // RemoteSolrException (server-side rejection, e.g. undefined field) is unchecked
+            // and would otherwise escape the resilience wrapper as an unhandled exception.
+            logSolrException(query, e, true);
         }
         return Optional.empty();
     }
@@ -363,7 +428,9 @@ public class TurSolr {
     }
 
     public static int firstRowPositionFromCurrentPage(TurSEParameters turSEParameters) {
-        return (turSEParameters.getCurrentPage() - 1) * turSEParameters.getRows();
+        // Clamp to 0: a client-supplied page <= 0 would otherwise yield a negative Solr
+        // 'start', which Solr rejects with "'start' parameter cannot be negative".
+        return Math.max(0, (turSEParameters.getCurrentPage() - 1) * turSEParameters.getRows());
     }
 
     public static TurSEResult createTurSEResultFromDocument(SolrDocument document) {

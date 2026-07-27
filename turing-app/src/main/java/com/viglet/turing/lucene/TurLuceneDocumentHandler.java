@@ -32,6 +32,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.stream.IntStream;
 
@@ -67,6 +69,54 @@ public class TurLuceneDocumentHandler {
         addDocument(instance, turSNSite, cleaned);
     }
 
+    /**
+     * T804 / §LV.2 — true bulk indexing for the embedded Lucene engine: builds
+     * every document, {@code updateDocument}s them into a single
+     * {@link org.apache.lucene.index.IndexWriter} session with <em>no</em> per-doc
+     * commit, then flushes with one {@code commit()} and one storage sync at the
+     * end. An 800-document catalog therefore pays one flush instead of 800.
+     *
+     * <p>Upsert semantics are preserved (each doc replaces any prior copy by
+     * {@code id}), so re-ingesting a feed never duplicates. On any I/O error the
+     * whole batch throws {@link UncheckedIOException} so the caller
+     * ({@code TurSNProcessQueue}) can fall back to the per-document path — which
+     * carries the schema-conflict / stale-writer self-healing retries.
+     *
+     * @return the number of documents written to the writer session
+     */
+    public int indexingBatch(TurLuceneInstance instance, TurSNSite turSNSite,
+            List<Map<String, Object>> documents) {
+        if (documents == null || documents.isEmpty()) {
+            return 0;
+        }
+        log.debug("Lucene batch indexing {} documents ...", documents.size());
+        Map<String, TurSNSiteField> fieldMap = turSNSiteFieldService.toMap(turSNSite);
+        int indexed = 0;
+        try {
+            for (Map<String, Object> attributes : documents) {
+                if (attributes == null) {
+                    continue;
+                }
+                Map<String, Object> cleaned = new LinkedHashMap<>(attributes);
+                cleaned.remove(SCORE);
+                cleaned.remove(VERSION);
+                cleaned.remove(BOOST);
+                Document doc = buildDocument(cleaned, fieldMap);
+                String docId = Optional.ofNullable(cleaned.get(ID))
+                        .map(Object::toString).orElse(UUID.randomUUID().toString());
+                instance.getWriter().updateDocument(new Term(ID, docId), doc);
+                indexed++;
+            }
+            instance.getWriter().commit();
+            syncAfterCommit(instance);
+            return indexed;
+        } catch (IOException e) {
+            throw new UncheckedIOException(
+                    "Error writing Lucene document batch (" + indexed + " of " + documents.size()
+                            + " written before failure)", e);
+        }
+    }
+
     public void deIndexing(TurLuceneInstance instance, String id) {
         log.debug("Lucene deIndexing id={}", id);
         try {
@@ -96,20 +146,9 @@ public class TurLuceneDocumentHandler {
     // -------------------------------------------------------------------------
 
     private void addDocument(TurLuceneInstance instance, TurSNSite turSNSite, Map<String, Object> attributes) {
-        Map<String, TurSNSiteField> fieldMap = turSNSiteFieldService.toMap(turSNSite);
+        Document doc = buildDocument(attributes, turSNSiteFieldService.toMap(turSNSite));
 
-        Document doc = new Document();
-        Optional.ofNullable(attributes).ifPresent(attr ->
-                attr.forEach((key, value) -> {
-                    if (value == null) return;
-                    TurSNSiteField siteField = fieldMap.get(key);
-                    TurSEFieldType fieldType = siteField != null ? siteField.getType() : TurSEFieldType.STRING;
-                    boolean multiValued = siteField != null && siteField.getMultiValued() == 1;
-
-                    addAttributeToDocument(doc, key, value, fieldType, multiValued);
-                }));
-
-        String docId = Optional.ofNullable(attributes.get(ID))
+        String docId = Optional.ofNullable(attributes == null ? null : attributes.get(ID))
                 .map(Object::toString)
                 .orElse(UUID.randomUUID().toString());
         try {
@@ -123,6 +162,26 @@ public class TurLuceneDocumentHandler {
             // breaker react to persistent ones.
             throw new UncheckedIOException("Error writing Lucene document id=" + docId, e);
         }
+    }
+
+    /**
+     * Builds a Lucene {@link Document} from an attribute map, dispatching each
+     * value by its configured {@link TurSEFieldType}. Shared by the single-doc
+     * {@link #addDocument} path and the T804 {@link #indexingBatch} path so a
+     * batched document is built byte-for-byte identically to a single one.
+     */
+    private Document buildDocument(Map<String, Object> attributes, Map<String, TurSNSiteField> fieldMap) {
+        Document doc = new Document();
+        Optional.ofNullable(attributes).ifPresent(attr ->
+                attr.forEach((key, value) -> {
+                    if (value == null) return;
+                    TurSNSiteField siteField = fieldMap.get(key);
+                    TurSEFieldType fieldType = siteField != null ? siteField.getType() : TurSEFieldType.STRING;
+                    boolean multiValued = siteField != null && siteField.getMultiValued() == 1;
+
+                    addAttributeToDocument(doc, key, value, fieldType, multiValued);
+                }));
+        return doc;
     }
 
     private void syncAfterCommit(TurLuceneInstance instance) {
@@ -171,6 +230,18 @@ public class TurLuceneDocumentHandler {
             TurSEFieldType fieldType) {
         String strValue = value != null ? value.toString().trim() : "";
         if (strValue.isEmpty()) return;
+
+        // The primary key `id` is an identifier, never free text: always index it
+        // as a non-analyzed keyword (StringField), regardless of the configured
+        // field type. A TEXT-typed id is tokenized, which (a) makes it wrongly
+        // highlightable and (b) breaks the exact-term seed lookup used by
+        // "Related"/similar (a TermQuery on `id`) for path-like ids such as AEM's
+        // /content/wknd/.../ski-touring-mont-blanc — leaving the feature empty.
+        // Forcing StringField keeps `id` a single exact term.
+        if (ID.equals(key)) {
+            addStringField(doc, key, strValue);
+            return;
+        }
 
         switch (fieldType) {
             case TEXT -> addTextField(doc, key, strValue);
@@ -259,19 +330,40 @@ public class TurLuceneDocumentHandler {
     }
 
     private void addDateField(Document doc, String key, String strValue) {
-        try {
-            SimpleDateFormat sdf = new SimpleDateFormat(SOLR_DATE_PATTERN);
-            sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
-            long epochMs = sdf.parse(strValue).getTime();
+        Long epochMs = parseDateToEpochMs(strValue);
+        if (epochMs != null) {
             doc.add(new LongPoint(key, epochMs));
             doc.add(new StoredField(key, epochMs));
             doc.add(new NumericDocValuesField(key, epochMs));
-        } catch (ParseException e) {
+        } else {
             log.warn("Cannot parse DATE value '{}' for field '{}'", strValue, key);
             doc.add(new StringField(key, strValue, Field.Store.YES));
         }
         // Use _sf suffix to avoid conflict with NumericDocValuesField on same field name
         addFacetField(doc, key + SORTED_SET_FACET_SUFFIX, strValue);
+    }
+
+    /**
+     * Parses an ISO-8601 date into epoch milliseconds, tolerating optional fractional
+     * seconds (e.g. {@code 2020-07-09T15:56:36.000Z}) which AEM and other sources emit but
+     * the strict Solr pattern ({@link TurLuceneConstants#SOLR_DATE_PATTERN}) does not accept.
+     *
+     * @return epoch millis, or {@code null} if the value cannot be parsed.
+     */
+    private Long parseDateToEpochMs(String strValue) {
+        // Fast path: ISO-8601 instant handles both with/without fractional seconds ('...Z').
+        try {
+            return Instant.parse(strValue).toEpochMilli();
+        } catch (DateTimeParseException ignored) {
+            // Fall back to the canonical Solr pattern for any non-standard/legacy value.
+        }
+        try {
+            SimpleDateFormat sdf = new SimpleDateFormat(SOLR_DATE_PATTERN);
+            sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+            return sdf.parse(strValue).getTime();
+        } catch (ParseException ignored) {
+            return null;
+        }
     }
 
     private void addFacetField(Document doc, String fieldName, String value) {

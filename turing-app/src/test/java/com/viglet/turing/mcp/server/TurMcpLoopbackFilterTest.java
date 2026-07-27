@@ -10,10 +10,12 @@
 package com.viglet.turing.mcp.server;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -46,33 +48,24 @@ class TurMcpLoopbackFilterTest {
 
         assertEquals(HttpServletResponse.SC_FORBIDDEN, res.getStatus());
         // The request must not have been forwarded down the chain.
-        assertTrue(chain.getRequest() == null, "non-loopback request should not reach the chain");
+        assertNull(chain.getRequest(), "non-loopback request should not reach the chain");
     }
 
-    @Test
-    void loopbackOnly_allowsIpv4Loopback() throws Exception {
+    @ParameterizedTest(name = "{0} loopback should reach the chain")
+    @CsvSource({
+            "127.0.0.1,         loopback request should reach the chain",
+            "0:0:0:0:0:0:0:1,   IPv6 loopback request should reach the chain"
+    })
+    void loopbackOnly_allowsLoopback(String remoteAddr, String message) throws Exception {
         TurMcpLoopbackFilter filter = new TurMcpLoopbackFilter(true);
-        MockHttpServletRequest req = request("127.0.0.1");
+        MockHttpServletRequest req = request(remoteAddr);
         MockHttpServletResponse res = new MockHttpServletResponse();
         MockFilterChain chain = new MockFilterChain();
 
         filter.doFilter(req, res, chain);
 
         assertEquals(HttpServletResponse.SC_OK, res.getStatus());
-        assertFalse(chain.getRequest() == null, "loopback request should reach the chain");
-    }
-
-    @Test
-    void loopbackOnly_allowsIpv6Loopback() throws Exception {
-        TurMcpLoopbackFilter filter = new TurMcpLoopbackFilter(true);
-        MockHttpServletRequest req = request("0:0:0:0:0:0:0:1");
-        MockHttpServletResponse res = new MockHttpServletResponse();
-        MockFilterChain chain = new MockFilterChain();
-
-        filter.doFilter(req, res, chain);
-
-        assertEquals(HttpServletResponse.SC_OK, res.getStatus());
-        assertFalse(chain.getRequest() == null, "IPv6 loopback request should reach the chain");
+        assertNotNull(chain.getRequest(), message);
     }
 
     @Test
@@ -85,6 +78,6 @@ class TurMcpLoopbackFilterTest {
         filter.doFilter(req, res, chain);
 
         assertEquals(HttpServletResponse.SC_OK, res.getStatus());
-        assertFalse(chain.getRequest() == null, "remote request should pass when loopback-only is off");
+        assertNotNull(chain.getRequest(), "remote request should pass when loopback-only is off");
     }
 }

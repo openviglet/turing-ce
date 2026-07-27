@@ -47,7 +47,6 @@ import com.viglet.turing.persistence.repository.sn.merge.TurSNSiteMergeProviders
 import com.viglet.turing.persistence.repository.sn.sort.TurSNSiteCustomSortRepository;
 import com.viglet.turing.persistence.repository.sn.spotlight.TurSNSiteSpotlightRepository;
 
-import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.log4j.Log4j2;
 
 @Log4j2
@@ -81,8 +80,14 @@ public class TurSNSiteExport {
 	}
 
 	public StreamingResponseBody exportAll(HttpServletResponse response) {
-		List<TurSNSite> turSNSites = turSNSiteRepository.findAll();
-		turSNSites.forEach(this::hydrateExportCollections);
+		List<TurSNSite> turSNSites = readOnlyTransactionTemplate.execute(status -> {
+			List<TurSNSite> sites = turSNSiteRepository.findAll();
+			sites.forEach(site -> {
+				hydrateExportCollections(site);
+				initializeLazyAssociations(site);
+			});
+			return sites;
+		});
 
 		return createSNSiteZipResponse(response, turSNSites, "sn-sites-all", null, false);
 	}
@@ -93,11 +98,20 @@ public class TurSNSiteExport {
 
 	public StreamingResponseBody exportBySiteId(String siteId, boolean includeContent,
 			boolean includeTemplate, String taskId, HttpServletResponse response) {
-		List<TurSNSite> turSNSites = turSNSiteRepository.findById(siteId).map(List::of).orElse(List.of());
+		List<TurSNSite> turSNSites = readOnlyTransactionTemplate.execute(status -> {
+			// Loaded inside this read-only transaction so lazy associations
+			// initialize through the open session (T488 / §XXVIII.3 — repositories
+			// are uncached, so a plain findById returns a session-attached entity).
+			List<TurSNSite> sites = turSNSiteRepository.findById(siteId).map(List::of).orElse(List.of());
+			sites.forEach(site -> {
+				hydrateExportCollections(site);
+				initializeLazyAssociations(site);
+			});
+			return sites;
+		});
 		if (turSNSites.isEmpty()) {
 			return null;
 		}
-		turSNSites.forEach(this::hydrateExportCollections);
 
 		Map<String, Map<String, List<Map<String, Object>>>> contentMap = null;
 		if (includeContent) {
@@ -172,14 +186,14 @@ public class TurSNSiteExport {
 
 	public void exportBySiteIdAsync(String siteId, boolean includeContent, boolean includeTemplate, String taskId) {
 		List<TurSNSite> turSNSites = readOnlyTransactionTemplate.execute(status -> {
-			List<TurSNSite> sites = turSNSiteRepository.findByIdNoCache(siteId).map(List::of).orElse(List.of());
+			List<TurSNSite> sites = turSNSiteRepository.findById(siteId).map(List::of).orElse(List.of());
 			sites.forEach(site -> {
 				hydrateExportCollections(site);
 				initializeLazyAssociations(site);
 			});
 			return sites;
 		});
-		if (turSNSites == null || turSNSites.isEmpty()) {
+		if (turSNSites.isEmpty()) {
 			return;
 		}
 

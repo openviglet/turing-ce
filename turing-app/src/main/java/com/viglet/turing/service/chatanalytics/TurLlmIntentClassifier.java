@@ -174,11 +174,10 @@ public class TurLlmIntentClassifier implements TurIntentClassifierStrategy {
     }
 
     private void recordTokens(String provider, String model, ChatResponse response) {
-        if (response == null || response.getMetadata() == null) return;
+        if (response == null) return;
         Usage usage = response.getMetadata().getUsage();
-        if (usage == null) return;
-        long in  = usage.getPromptTokens()     == null ? 0L : usage.getPromptTokens().longValue();
-        long out = usage.getCompletionTokens() == null ? 0L : usage.getCompletionTokens().longValue();
+        long in  = usage.getPromptTokens().longValue();
+        long out = usage.getCompletionTokens().longValue();
         llmObservation.recordTokens(provider, model, in, out);
     }
 
@@ -254,7 +253,7 @@ public class TurLlmIntentClassifier implements TurIntentClassifierStrategy {
                   .append("\n");
             }
         }
-        if (sb.length() == 0 && StringUtils.isNotBlank(firstUserMessage)) {
+        if (sb.isEmpty() && StringUtils.isNotBlank(firstUserMessage)) {
             sb.append("user: ").append(truncate(firstUserMessage, 800));
         }
         return sb.toString();

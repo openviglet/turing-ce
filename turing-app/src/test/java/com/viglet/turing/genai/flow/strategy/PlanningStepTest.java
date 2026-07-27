@@ -94,7 +94,7 @@ class PlanningStepTest {
     void parsePlan_statusDefaultsToPending() {
         List<PlanItem> plan = ChatFlowOps.parsePlan(
                 "[{\"title\":\"no status\"},{\"title\":\"weird\",\"status\":\"in_progress\"}]");
-        assertThat(plan).allSatisfy(item ->
+        assertThat(plan).isNotEmpty().allSatisfy(item ->
                 assertThat(item.status()).isEqualTo(PlanItem.PENDING));
     }
 
@@ -163,8 +163,10 @@ class PlanningStepTest {
     void generatePlan_parsesModelReply() {
         ChatModel model = mock(ChatModel.class);
         when(model.call(any(Prompt.class))).thenReturn(chatResponse(
-                "```json\n[{\"id\":\"1\",\"title\":\"Collect docs\",\"status\":\"pending\"},"
-                        + "{\"id\":\"2\",\"title\":\"Review\",\"status\":\"pending\"}]\n```"));
+                """
+                ```json
+                [{"id":"1","title":"Collect docs","status":"pending"},{"id":"2","title":"Review","status":"pending"}]
+                ```"""));
         List<PlanItem> plan = ChatFlowOps.generatePlan(model, planningNode("__plan", null), Map.of());
         assertThat(plan).extracting(PlanItem::title).containsExactly("Collect docs", "Review");
     }
@@ -243,7 +245,7 @@ class PlanningStepTest {
     void apply_nullModelWritesEmptyArray() {
         TurChatFlowState state = stateWith("{}");
         ChatFlowOps.applyPlanningStepNode(state, planningNode("__plan", null), null);
-        assertThat(ChatFlowOps.readVariables(state).get("__plan")).isEqualTo("[]");
+        assertThat(ChatFlowOps.readVariables(state)).containsEntry("__plan", "[]");
     }
 
     // ─────────────────────────── helpers ───────────────────────────

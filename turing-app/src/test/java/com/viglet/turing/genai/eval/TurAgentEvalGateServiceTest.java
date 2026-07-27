@@ -142,6 +142,64 @@ class TurAgentEvalGateServiceTest {
         assertThat(gateService.shouldBlockPublish(AGENT_ID)).isFalse();
     }
 
+    @Test
+    void pendingReview_warnsWhenNotBlocking() {
+        when(evalSetRepository.findByTurAIAgent_IdOrderByNameAsc(AGENT_ID))
+                .thenReturn(List.of(setWithCase(false)));
+        TurAgentEvalReport report = report(false, false, caseResult("c1", false));
+        report.setPendingReview(true);
+        when(reportRepository.findFirstByTurAIAgent_IdOrderByCreatedAtDesc(AGENT_ID))
+                .thenReturn(Optional.of(report));
+
+        TurAgentEvalGateDto gate = gateService.gate(AGENT_ID);
+
+        assertThat(gate.status()).isEqualTo("PENDING_REVIEW");
+        assertThat(gate.findings()).hasSize(1);
+        assertThat(gate.findings().get(0).code()).isEqualTo("eval_pending_review");
+        assertThat(gate.findings().get(0).severity()).isEqualTo("WARNING");
+    }
+
+    @Test
+    void pendingReview_blocksWhenBlockingSet() {
+        when(evalSetRepository.findByTurAIAgent_IdOrderByNameAsc(AGENT_ID))
+                .thenReturn(List.of(setWithCase(true)));
+        TurAgentEvalReport report = report(false, false, caseResult("c1", false));
+        report.setPendingReview(true);
+        when(reportRepository.findFirstByTurAIAgent_IdOrderByCreatedAtDesc(AGENT_ID))
+                .thenReturn(Optional.of(report));
+
+        assertThat(gateService.gate(AGENT_ID).findings().get(0).severity()).isEqualTo("ERROR");
+        assertThat(gateService.shouldBlockPublish(AGENT_ID)).isTrue();
+    }
+
+    @Test
+    void history_mapsReportsNewestFirstWithBreakdown() {
+        TurAgentEvalReport older = report(false, false, caseResult("c1", false));
+        older.setId("report-old");
+        older.setCreatedAt(LocalDateTime.parse("2026-06-14T12:00:00"));
+        TurAgentEvalReport newer = report(true, false, caseResult("c1", true));
+        newer.setId("report-new");
+        when(reportRepository.findByTurAIAgent_IdOrderByCreatedAtDesc(AGENT_ID))
+                .thenReturn(List.of(newer, older));
+
+        var history = gateService.history(AGENT_ID);
+
+        assertThat(history).hasSize(2);
+        assertThat(history.get(0).reportId()).isEqualTo("report-new");
+        assertThat(history.get(0).passed()).isTrue();
+        assertThat(history.get(0).results()).hasSize(1);
+        assertThat(history.get(1).reportId()).isEqualTo("report-old");
+        assertThat(history.get(1).passed()).isFalse();
+    }
+
+    @Test
+    void history_emptyWhenNoReports() {
+        when(reportRepository.findByTurAIAgent_IdOrderByCreatedAtDesc(AGENT_ID))
+                .thenReturn(List.of());
+
+        assertThat(gateService.history(AGENT_ID)).isEmpty();
+    }
+
     // ─────────────────────────── Fixtures ───────────────────────────
 
     private static TurAgentEvalSet setWithCase(boolean blocking) {
@@ -158,7 +216,7 @@ class TurAgentEvalGateServiceTest {
             TurAgentEvalCaseResultDto... results) {
         TurAgentEvalReport report = new TurAgentEvalReport();
         report.setId("report-1");
-        report.setCreatedAt(LocalDateTime.now());
+        report.setCreatedAt(LocalDateTime.parse("2026-06-15T12:00:00"));
         report.setPassed(passed);
         report.setRegressed(regressed);
         report.setCaseCount(results.length);

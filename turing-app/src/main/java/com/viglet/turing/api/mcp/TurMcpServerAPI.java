@@ -19,6 +19,7 @@ import com.viglet.turing.persistence.repository.agent.TurAIAgentRepository;
 import com.viglet.turing.persistence.repository.mcp.TurMcpServerRepository;
 import com.viglet.turing.persistence.repository.persona.TurPersonaRepository;
 import com.viglet.turing.spring.utils.TurPersistenceUtils;
+import com.viglet.turing.tenant.TurInfraTenantScope;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -31,22 +32,29 @@ public class TurMcpServerAPI {
     private final TurMcpServerMapper turMcpServerMapper;
     private final TurAIAgentRepository turAIAgentRepository;
     private final TurPersonaRepository turPersonaRepository;
+    private final TurInfraTenantScope tenantScope;
 
     public TurMcpServerAPI(TurMcpServerRepository turMcpServerRepository,
             TurMcpServerMapper turMcpServerMapper,
             TurAIAgentRepository turAIAgentRepository,
-            TurPersonaRepository turPersonaRepository) {
+            TurPersonaRepository turPersonaRepository,
+            TurInfraTenantScope tenantScope) {
         this.turMcpServerRepository = turMcpServerRepository;
         this.turMcpServerMapper = turMcpServerMapper;
         this.turAIAgentRepository = turAIAgentRepository;
         this.turPersonaRepository = turPersonaRepository;
+        this.tenantScope = tenantScope;
     }
 
     @Operation(summary = "MCP Server List")
     @GetMapping
     public List<TurMcpServerDto> turMcpServerList() {
-        return turMcpServerMapper
-                .toDtoList(this.turMcpServerRepository.findAll(TurPersistenceUtils.orderByTitleIgnoreCase()));
+        java.util.Comparator<TurMcpServer> byTitle =
+                java.util.Comparator.comparing(TurMcpServer::getTitle, String.CASE_INSENSITIVE_ORDER);
+        return turMcpServerMapper.toDtoList(tenantScope.visibleList(
+                () -> this.turMcpServerRepository.findAll(TurPersistenceUtils.orderByTitleIgnoreCase()),
+                tenantId -> this.turMcpServerRepository.findVisibleToTenant(tenantId)
+                        .stream().sorted(byTitle).toList()));
     }
 
     @Operation(summary = "MCP Server structure")
@@ -59,7 +67,7 @@ public class TurMcpServerAPI {
     @GetMapping("/{id}")
     public TurMcpServerDto turMcpServerGet(@PathVariable String id) {
         return turMcpServerMapper
-                .toDto(this.turMcpServerRepository.findById(id).orElse(new TurMcpServer()));
+                .toDto(this.turMcpServerRepository.findById(id).filter(tenantScope::isVisibleToTenant).orElse(new TurMcpServer()));
     }
 
     @Operation(summary = "Update a MCP Server")
@@ -67,7 +75,8 @@ public class TurMcpServerAPI {
     public TurMcpServerDto turMcpServerUpdate(@PathVariable String id,
             @RequestBody TurMcpServerDto turMcpServerDto) {
         TurMcpServer source = turMcpServerMapper.toEntity(turMcpServerDto);
-        return turMcpServerRepository.findById(id).map(existing -> {
+        return turMcpServerRepository.findById(id).filter(tenantScope::isVisibleToTenant).map(existing -> {
+            tenantScope.assertWritable(existing);
             turMcpServerMapper.updateEntity(source, existing);
             turMcpServerRepository.save(existing);
             return turMcpServerMapper.toDto(existing);
@@ -78,6 +87,16 @@ public class TurMcpServerAPI {
     @Operation(summary = "Delete a MCP Server")
     @DeleteMapping("/{id}")
     public boolean turMcpServerDelete(@PathVariable String id) {
+        // T365 — scope the by-id delete: a non-visible id (another tenant's
+        // server) is treated as not-found, so neither the reference cleanup
+        // nor the delete runs.
+        var server = this.turMcpServerRepository.findById(id)
+                .filter(tenantScope::isVisibleToTenant);
+        if (server.isEmpty()) {
+            return true;
+        }
+        // T372 — a tenant may not delete a GLOBAL (platform-provided) server.
+        tenantScope.assertWritable(server.get());
         // Detach every reference to this MCP server before deleting so the
         // FK constraints don't reject the delete:
         //   • ai_agent_mcp_server (M2M join table — remove from agent's catalog)
@@ -103,6 +122,7 @@ public class TurMcpServerAPI {
     @PostMapping
     public TurMcpServerDto turMcpServerAdd(@RequestBody TurMcpServerDto turMcpServerDto) {
         TurMcpServer turMcpServer = turMcpServerMapper.toEntity(turMcpServerDto);
+        tenantScope.stampOnCreate(turMcpServer);
         this.turMcpServerRepository.save(turMcpServer);
         return turMcpServerMapper.toDto(turMcpServer);
     }

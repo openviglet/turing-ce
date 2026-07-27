@@ -15,17 +15,12 @@
 
 package com.viglet.turing.commons.utils;
 
-import java.io.BufferedInputStream;
 import java.io.File;
-import java.io.IOException;
-import java.io.OutputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.text.BreakIterator;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -36,24 +31,17 @@ import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.KeyValue;
 import org.apache.commons.collections4.keyvalue.DefaultMapEntry;
-import org.apache.commons.compress.archivers.ArchiveOutputStream;
-import org.apache.commons.compress.archivers.ArchiveStreamFactory;
-import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
-import org.apache.commons.io.FileUtils;
 import org.apache.commons.validator.routines.UrlValidator;
 import org.apache.hc.core5.http.NameValuePair;
 import org.apache.hc.core5.net.URIBuilder;
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
 import org.jsoup.Jsoup;
 
+import com.viglet.core.commons.io.VigletStoreDirectory;
+import com.viglet.core.commons.io.VigletZipUtils;
+import com.viglet.core.commons.json.VigletJson;
 import com.viglet.turing.commons.exception.TurException;
 
 import lombok.extern.slf4j.Slf4j;
-import net.lingala.zip4j.ZipFile;
-import tools.jackson.databind.SerializationFeature;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * @author Alexandre Oliveira
@@ -61,8 +49,6 @@ import tools.jackson.databind.json.JsonMapper;
  */
 @Slf4j
 public class TurCommonsUtils {
-    private static final String USER_DIR = "user.dir";
-    private static final File userDir = new File(System.getProperty(USER_DIR));
     public static final String COLON = ":";
 
     private TurCommonsUtils() {
@@ -152,21 +138,62 @@ public class TurCommonsUtils {
     public static void addParameterToQueryString(StringBuilder sbQueryString, String name,
             String value) {
         if (value != null) {
-            sbQueryString.append(String.format("%s=%s&", name, value));
+            // Percent-encode the value here (not via the URI constructor in
+            // modifiedURI) so structural delimiters — above all '&' — inside a
+            // value cannot be read as parameter separators. The parameter name is
+            // an internal constant (q, p, sort, fq[], …) and is emitted literally.
+            sbQueryString.append(name).append('=').append(encodeQueryValue(value)).append('&');
         }
+    }
+
+    private static final String QUERY_VALUE_SAFE =
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~:/@,;!$'()*?";
+    private static final char[] HEX = "0123456789ABCDEF".toCharArray();
+
+    /**
+     * Percent-encodes a query-parameter <em>value</em> per RFC 3986. Unreserved
+     * characters and the sub-delimiters that are safe to keep literal in a value
+     * ({@code : / @ , ; ! $ ' ( ) * ?}) are preserved so links stay readable and
+     * backward-compatible; everything else — crucially the structural delimiters
+     * {@code & = + # %}, whitespace and non-ASCII — is percent-encoded as UTF-8.
+     *
+     * <p>This is required because a raw {@code &} inside a value (e.g. a facet
+     * value {@code "RAG & Chat"}) would otherwise be read as a parameter
+     * separator, truncating the filter and returning no results. The
+     * multi-argument {@link URI} constructor cannot do this job: it leaves
+     * {@code &}/{@code =} literal (they are legal query characters) and
+     * double-encodes existing {@code %XX} escapes ({@code %26} &rarr;
+     * {@code %2526}) — so {@link #modifiedURI(URI, StringBuilder)} sets the
+     * already-encoded query verbatim instead.
+     */
+    private static String encodeQueryValue(String value) {
+        StringBuilder out = new StringBuilder(value.length());
+        for (byte b : value.getBytes(StandardCharsets.UTF_8)) {
+            int c = b & 0xFF;
+            if (c < 0x80 && QUERY_VALUE_SAFE.indexOf(c) >= 0) {
+                out.append((char) c);
+            } else {
+                out.append('%').append(HEX[c >> 4]).append(HEX[c & 0x0F]);
+            }
+        }
+        return out.toString();
     }
 
     public static URI modifiedURI(URI uri, StringBuilder sbQueryString) {
         String query = removeAmpersand(sbQueryString);
+        String path = uri.getRawPath() == null ? "" : uri.getRawPath();
         try {
-            // Use the multi-argument URI constructor so any character that needs
-            // quoting (non-ASCII like 'é', whitespace, '"', etc.) is percent-encoded.
-            // All callers pass decoded values from URIBuilder.getQueryParams(), so we
-            // don't risk double-encoding pre-existing pct-encoded sequences.
-            return new URI(null, null, uri.getRawPath(), query.isEmpty() ? null : query, null);
+            // addParameterToQueryString has already percent-encoded every value,
+            // so set the query verbatim. Routing it through the multi-argument URI
+            // constructor would be wrong twice over: it leaves reserved sub-delims
+            // ('&', '=') literal — so an '&' inside a value would split the params —
+            // and it double-encodes existing "%XX" escapes ("%26" -> "%2526"). The
+            // single-string URI parser keeps the encoded query and the literal
+            // "fq[]" brackets intact.
+            return new URI(query.isEmpty() ? path : path + "?" + query);
         } catch (URISyntaxException e) {
             log.error("Failed to build URI from path '{}' with query '{}': {}",
-                    uri.getRawPath(), query, e.getMessage(), e);
+                    path, query, e.getMessage(), e);
         }
         return uri;
     }
@@ -192,118 +219,52 @@ public class TurCommonsUtils {
     }
 
     /**
-     * Add all files from the source directory to the destination zip file
+     * Add all files from the source directory to the destination zip file.
+     *
+     * <p>Delegates to {@link VigletZipUtils#addFilesToZip(File, File)}
+     * (Block Q / T375).
      *
      * @param source      the directory with files to add
      * @param destination the zip file that should contain the files
      */
     public static void addFilesToZip(File source, File destination) {
-
-        try (OutputStream archiveStream = Files.newOutputStream(destination.toPath());
-                ArchiveOutputStream<ZipArchiveEntry> archive = new ArchiveStreamFactory()
-                        .createArchiveOutputStream(ArchiveStreamFactory.ZIP, archiveStream)) {
-
-            FileUtils.listFiles(source, null, true)
-                    .forEach(file -> addFileToZip(source, archive, file));
-
-            archive.finish();
-        } catch (IOException e) {
-            log.error(e.getMessage(), e);
-        }
-    }
-
-    private static void addFileToZip(File source, ArchiveOutputStream<ZipArchiveEntry> archive,
-            File file) {
-        String entryName;
-        try {
-            entryName = getEntryName(source, file);
-            ZipArchiveEntry entry = new ZipArchiveEntry(entryName);
-            archive.putArchiveEntry(entry);
-
-            try (BufferedInputStream input = new BufferedInputStream(Files.newInputStream(file.toPath()))) {
-                input.transferTo(archive);
-                archive.closeArchiveEntry();
-            }
-        } catch (IOException e) {
-            log.error(e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Remove the leading part of each entry that contains the source directory name
-     *
-     * @param source the directory where the file entry is found
-     * @param file   the file that is about to be added
-     * @return the name of an archive entry
-     */
-    private static String getEntryName(File source, File file) {
-        Path sourcePath = source.toPath().toAbsolutePath().normalize();
-        Path filePath = file.toPath().toAbsolutePath().normalize();
-        return sourcePath.relativize(filePath).toString();
+        VigletZipUtils.addFilesToZip(source, destination);
     }
 
     public static File getStoreDir() {
-        File store = new File(userDir.getAbsolutePath().concat(File.separator + "store"));
-        try {
-            Files.createDirectories(store.toPath());
-        } catch (IOException e) {
-            log.error(e.getMessage(), e);
-        }
-        return store;
+        return VigletStoreDirectory.getStoreDir();
     }
 
     public static File addSubDirToStoreDir(String directoryName) {
-        File storeDir = getStoreDir();
-        File newDir = new File(storeDir.getAbsolutePath().concat(File.separator + directoryName));
-        try {
-            Files.createDirectories(newDir.toPath());
-        } catch (IOException e) {
-            log.error(e.getMessage(), e);
-        }
-        return newDir;
+        return VigletStoreDirectory.addSubDirToStoreDir(directoryName);
     }
 
     /**
-     * Unzip it
+     * Unzip it.
+     *
+     * <p>Delegates to {@link VigletZipUtils#unZipIt(File, File)}
+     * (Block Q / T375).
      *
      * @param file         input zip file
      * @param outputFolder output Folder
      */
     public static void unZipIt(File file, File outputFolder) {
-        try (ZipFile zipFile = new ZipFile(file)) {
-            zipFile.extractAll(outputFolder.getAbsolutePath());
-        } catch (IllegalStateException | IOException e) {
-            log.error(e.getMessage(), e);
-        }
+        VigletZipUtils.unZipIt(file, outputFolder);
     }
 
     public static boolean isValidJson(String test) {
-        try {
-            new JSONObject(test);
-        } catch (JSONException ex) {
-            try {
-                new JSONArray(test);
-            } catch (JSONException ex1) {
-                return false;
-            }
-        }
-        return true;
+        return VigletJson.isValidJson(test);
     }
 
     public static String asJsonString(final Object obj) throws TurException {
         try {
-            // No Jackson 3, usamos o Builder para configurar e criar o mapper
-            JsonMapper mapper = JsonMapper.builder()
-                    .configure(SerializationFeature.FAIL_ON_EMPTY_BEANS, false)
-                    .build();
-
-            return mapper.writeValueAsString(obj);
+            return VigletJson.asJsonString(obj);
         } catch (Exception e) {
             throw new TurException(e);
         }
     }
 
     public static File getTempDirectory() {
-        return addSubDirToStoreDir("tmp");
+        return VigletStoreDirectory.getTempDirectory();
     }
 }

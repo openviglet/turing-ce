@@ -33,8 +33,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.viglet.turing.api.exception.TurNotFoundException;
 import com.viglet.turing.domain.llm.LlmInstanceUpdatedEvent;
 import com.viglet.turing.domain.llm.LlmProviderType;
+import com.viglet.turing.genai.provider.llm.TurLlmModelDiscoveryService;
+import com.viglet.turing.genai.verify.TurModelVerifyResult;
+import com.viglet.turing.genai.verify.TurModelVerifyService;
 import com.viglet.turing.persistence.dto.llm.TurLLMInstanceDto;
 import com.viglet.turing.persistence.mapper.llm.TurLLMInstanceMapper;
 import com.viglet.turing.persistence.model.llm.TurLLMInstance;
@@ -42,6 +46,7 @@ import com.viglet.turing.persistence.model.llm.TurLLMVendor;
 import com.viglet.turing.persistence.repository.llm.TurLLMInstanceRepository;
 import com.viglet.turing.spring.utils.TurPersistenceUtils;
 import com.viglet.turing.system.security.TurSecretCryptoService;
+import com.viglet.turing.tenant.TurInfraTenantScope;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -55,24 +60,73 @@ public class TurLLMInstanceAPI {
     private final TurLLMInstanceMapper turLLMInstanceMapper;
     private final TurSecretCryptoService turSecretCryptoService;
     private final ApplicationEventPublisher eventPublisher;
+    private final TurInfraTenantScope tenantScope;
+    private final TurLlmModelDiscoveryService modelDiscoveryService;
+    private final TurModelVerifyService modelVerifyService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public TurLLMInstanceAPI(TurLLMInstanceRepository turLLMInstanceRepository,
             TurLLMInstanceMapper turLLMInstanceMapper,
             TurSecretCryptoService turSecretCryptoService,
-            ApplicationEventPublisher eventPublisher) {
+            ApplicationEventPublisher eventPublisher,
+            TurInfraTenantScope tenantScope,
+            TurLlmModelDiscoveryService modelDiscoveryService,
+            TurModelVerifyService modelVerifyService) {
         this.turLLMInstanceRepository = turLLMInstanceRepository;
         this.turLLMInstanceMapper = turLLMInstanceMapper;
         this.turSecretCryptoService = turSecretCryptoService;
         this.eventPublisher = eventPublisher;
+        this.tenantScope = tenantScope;
+        this.modelDiscoveryService = modelDiscoveryService;
+        this.modelVerifyService = modelVerifyService;
+    }
+
+    /**
+     * T577 — lists the models available for a vendor so the model field can be
+     * a picker instead of free text. Serves a live list from the vendor API
+     * when a key is available (typed-but-unsaved via {@code apiKey}, or reused
+     * from an existing {@code instanceId}); otherwise the bundled static
+     * catalog. The picker stays editable, so any unlisted id can still be typed.
+     */
+    @Secured({"ROLE_ADMIN", "LLM_VIEW", "LLM_CREATE", "LLM_EDIT"})
+    @Operation(summary = "List selectable models for an LLM vendor")
+    @PostMapping("/models")
+    public TurLlmModelDiscoveryService.Result turLLMInstanceModels(@RequestBody TurLlmModelListRequest request) {
+        return modelDiscoveryService.listModels(request.vendorId(), request.instanceId(),
+                request.apiKey(), request.url(), request.providerOptionsJson());
+    }
+
+    /** Request body for {@link #turLLMInstanceModels(TurLlmModelListRequest)}. */
+    public record TurLlmModelListRequest(String vendorId, String instanceId, String apiKey, String url,
+            String providerOptionsJson) {
+    }
+
+    /**
+     * Verifies a saved LLM instance by firing one minimal live chat call at its
+     * configured vendor/URL/model with the decrypted key, so an operator can
+     * confirm the configuration actually works. Never throws on a bad
+     * config — a failure is reported in the result body (HTTP 200 with
+     * {@code ok=false}); only an unknown/foreign id is a 404.
+     */
+    @Secured({"ROLE_ADMIN", "LLM_VIEW", "LLM_CREATE", "LLM_EDIT"})
+    @Operation(summary = "Verify that a Large Language Model instance is working")
+    @PostMapping("/{id}/verify")
+    public TurModelVerifyResult turLLMInstanceVerify(@PathVariable String id) {
+        return turLLMInstanceRepository.findById(id).filter(tenantScope::isVisibleToTenant)
+                .map(modelVerifyService::verifyLlmInstance)
+                .orElseThrow(() -> TurNotFoundException.of("LLM instance", id));
     }
 
     @Secured({"ROLE_ADMIN", "LLM_VIEW"})
     @Operation(summary = "Large Language Model List")
     @GetMapping
     public List<TurLLMInstanceDto> turLLMInstanceList() {
-        return turLLMInstanceMapper
-                .toDtoList(this.turLLMInstanceRepository.findAll(TurPersistenceUtils.orderByTitleIgnoreCase()));
+        java.util.Comparator<TurLLMInstance> byTitle =
+                java.util.Comparator.comparing(TurLLMInstance::getTitle, String.CASE_INSENSITIVE_ORDER);
+        return turLLMInstanceMapper.toDtoList(tenantScope.visibleList(
+                () -> this.turLLMInstanceRepository.findAll(TurPersistenceUtils.orderByTitleIgnoreCase()),
+                tenantId -> this.turLLMInstanceRepository.findVisibleToTenant(tenantId)
+                        .stream().sorted(byTitle).toList()));
     }
 
     @Secured({"ROLE_ADMIN", "LLM_CREATE"})
@@ -89,7 +143,7 @@ public class TurLLMInstanceAPI {
     @Operation(summary = "Show a Large Language Model")
     @GetMapping("/{id}")
     public TurLLMInstanceDto turLLMInstanceGet(@PathVariable String id) {
-        return turLLMInstanceMapper.toDto(this.turLLMInstanceRepository.findById(id).orElse(new TurLLMInstance()));
+        return turLLMInstanceMapper.toDto(this.turLLMInstanceRepository.findById(id).filter(tenantScope::isVisibleToTenant).orElse(new TurLLMInstance()));
     }
 
     @Secured({"ROLE_ADMIN", "LLM_EDIT"})
@@ -98,7 +152,8 @@ public class TurLLMInstanceAPI {
     public TurLLMInstanceDto turLLMInstanceUpdate(@PathVariable String id, @RequestBody Map<String, Object> payload) {
         TurLLMInstance turLLMInstance = objectMapper.convertValue(payload, TurLLMInstance.class);
         String apiKey = payload.get("apiKey") instanceof String apiKeyValue ? apiKeyValue : null;
-        return turLLMInstanceRepository.findById(id).map(turLLMInstanceEdit -> {
+        return turLLMInstanceRepository.findById(id).filter(tenantScope::isVisibleToTenant).map(turLLMInstanceEdit -> {
+            tenantScope.assertWritable(turLLMInstanceEdit);
             turLLMInstanceEdit.setTitle(turLLMInstance.getTitle());
             turLLMInstanceEdit.setDescription(turLLMInstance.getDescription());
             turLLMInstanceEdit.setIcon(turLLMInstance.getIcon());
@@ -106,6 +161,15 @@ public class TurLLMInstanceAPI {
             turLLMInstanceEdit.setUrl(turLLMInstance.getUrl());
             turLLMInstanceEdit.setEnabled(turLLMInstance.getEnabled());
             turLLMInstanceEdit.setModelName(turLLMInstance.getModelName());
+            turLLMInstanceEdit.setModelNames(turLLMInstance.getModelNames());
+            // T757 / ADR 0004 — per-kind default models on the unified instance.
+            turLLMInstanceEdit.setEmbeddingModelName(turLLMInstance.getEmbeddingModelName());
+            turLLMInstanceEdit.setRerankModelName(turLLMInstance.getRerankModelName());
+            // T772 — in-process ONNX (local/HF) embedding-serving fields, so an ONNX
+            // embedding instance can be created/edited from the unified form.
+            turLLMInstanceEdit.setEmbeddingModelPath(turLLMInstance.getEmbeddingModelPath());
+            turLLMInstanceEdit.setEmbeddingTokenizerPath(turLLMInstance.getEmbeddingTokenizerPath());
+            turLLMInstanceEdit.setEmbeddingBatchSize(turLLMInstance.getEmbeddingBatchSize());
             turLLMInstanceEdit.setTemperature(turLLMInstance.getTemperature());
             turLLMInstanceEdit.setTopK(turLLMInstance.getTopK());
             turLLMInstanceEdit.setTopP(turLLMInstance.getTopP());
@@ -117,8 +181,16 @@ public class TurLLMInstanceAPI {
             turLLMInstanceEdit.setSupportedCapabilities(turLLMInstance.getSupportedCapabilities());
             turLLMInstanceEdit.setTimeout(turLLMInstance.getTimeout());
             turLLMInstanceEdit.setMaxRetries(turLLMInstance.getMaxRetries());
+            // T780 — context window is now editable/auto-filled from the catalog.
+            turLLMInstanceEdit.setContextWindow(turLLMInstance.getContextWindow());
+            // T780 — embedding dimensions may be auto-filled from the catalog, but a
+            // payload that omits it must preserve the runtime-detected value (T627).
+            if (turLLMInstance.getEmbeddingDimensions() != null) {
+                turLLMInstanceEdit.setEmbeddingDimensions(turLLMInstance.getEmbeddingDimensions());
+            }
             turLLMInstanceEdit.setProviderOptionsJson(turLLMInstance.getProviderOptionsJson());
             turLLMInstanceEdit.setToolsEnabled(turLLMInstance.isToolsEnabled());
+            turLLMInstanceEdit.setFileUploadEnabled(turLLMInstance.isFileUploadEnabled());
             if (StringUtils.hasText(apiKey)) {
                 turLLMInstanceEdit.setApiKeyEncrypted(turSecretCryptoService.encrypt(apiKey));
             }
@@ -136,7 +208,13 @@ public class TurLLMInstanceAPI {
     @Operation(summary = "Delete a Large Language Model")
     @DeleteMapping("/{id}")
     public boolean turLLMInstanceDelete(@PathVariable String id) {
-        this.turLLMInstanceRepository.delete(id);
+        // T365 — scope the by-id delete: a non-visible id (another tenant's
+        // instance) is treated as not-found, never deleted.
+        this.turLLMInstanceRepository.findById(id).filter(tenantScope::isVisibleToTenant)
+                .ifPresent(existing -> {
+                    tenantScope.assertWritable(existing);
+                    this.turLLMInstanceRepository.delete(id);
+                });
         return true;
     }
 
@@ -149,6 +227,7 @@ public class TurLLMInstanceAPI {
         if (StringUtils.hasText(apiKey)) {
             turLLMInstance.setApiKeyEncrypted(turSecretCryptoService.encrypt(apiKey));
         }
+        tenantScope.stampOnCreate(turLLMInstance);
         this.turLLMInstanceRepository.save(turLLMInstance);
         eventPublisher.publishEvent(LlmInstanceUpdatedEvent.created(
                 turLLMInstance.getId(),

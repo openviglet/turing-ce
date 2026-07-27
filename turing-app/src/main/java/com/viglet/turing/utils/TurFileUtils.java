@@ -17,11 +17,9 @@
 package com.viglet.turing.utils;
 
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
-import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.URI;
@@ -39,21 +37,12 @@ import java.util.Set;
 import java.util.UUID;
 
 import org.apache.commons.io.FilenameUtils;
-import org.apache.tika.exception.TikaException;
-import org.apache.tika.extractor.EmbeddedDocumentExtractor;
 import org.apache.tika.metadata.DublinCore;
-import org.apache.tika.metadata.Metadata;
-import org.apache.tika.parser.AutoDetectParser;
-import org.apache.tika.parser.ParseContext;
-import org.apache.tika.parser.Parser;
-import org.apache.tika.parser.ocr.TesseractOCRConfig;
-import org.apache.tika.parser.pdf.PDFParserConfig;
-import org.apache.tika.sax.BodyContentHandler;
 import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
-import org.xml.sax.ContentHandler;
-import org.xml.sax.SAXException;
 
+import com.viglet.core.content.VigletContentExtractor;
+import com.viglet.core.content.VigletExtractedContent;
 import com.viglet.turing.api.ocr.TurTikaFileAttributes;
 import com.viglet.turing.commons.file.TurFileAttributes;
 import com.viglet.turing.commons.file.TurFileSize;
@@ -76,6 +65,16 @@ public class TurFileUtils {
     private static final String PDF_DOC_INFO_TITLE = "pdf:docinfo:title";
     private static final String TMP = "tmp";
 
+    // Many sites sit behind a CDN/WAF (nginx, Akamai, Cloudflare) that rejects
+    // the default Java HttpURLConnection User-Agent ("Java/21") with a bot-block
+    // response such as HTTP 444 (nginx "no response"). Present browser-like
+    // request headers so legitimate content ingestion isn't refused.
+    private static final String USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            + "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    private static final String ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            + "application/pdf,*/*;q=0.8";
+    private static final String ACCEPT_LANGUAGE = "en-US,en;q=0.9";
+
     private TurFileUtils() {
         throw new IllegalStateException("Turing File Utilities class");
     }
@@ -85,76 +84,31 @@ public class TurFileUtils {
     }
 
     public static TurTikaFileAttributes readFile(File file) {
-        if (file == null || !file.exists()) {
-            log.info("File not exists: {}", file != null ? file.getAbsolutePath() : "null");
-            return null;
-        }
-        return parseFile(file);
+        return toTikaAttributes(VigletContentExtractor.extract(file));
     }
 
     public static TurTikaFileAttributes parseFile(File file) {
-        try (InputStream inputStream = new FileInputStream(file)) {
-            return getTurTikaFileAttributes(file, inputStream);
-        } catch (IOException e) {
-            log.error("Error parsing file: {}", e.getMessage(), e);
-            return null;
-        }
+        return toTikaAttributes(VigletContentExtractor.extract(file));
     }
 
     public static TurTikaFileAttributes parseFile(MultipartFile multipartFile) {
         try (InputStream inputStream = multipartFile.getInputStream()) {
-            return getTurTikaFileAttributes(null, inputStream);
+            return toTikaAttributes(VigletContentExtractor.extract(inputStream));
         } catch (IOException e) {
             log.error("Error parsing multipart file: {}", e.getMessage(), e);
             return null;
         }
     }
 
-    private static TurTikaFileAttributes getTurTikaFileAttributes(File file, InputStream inputStream) {
-        StringBuilder contentFile = new StringBuilder();
-        AutoDetectParser parser = new AutoDetectParser();
-        BodyContentHandler handler = new BodyContentHandler(-1);
-        Metadata metadata = new Metadata();
-
-        EmbeddedDocumentExtractor embeddedDocumentExtractor = createEmbeddedDocumentExtractor(contentFile);
-        ParseContext parseContext = createParseContext(parser);
-        parseContext.set(EmbeddedDocumentExtractor.class, embeddedDocumentExtractor);
-
-        try {
-            parser.parse(inputStream, handler, metadata, parseContext);
-        } catch (IOException | SAXException | TikaException e) {
-            log.error("Error during Tika parsing: {}", e.getMessage(), e);
-        }
-
-        contentFile.append(handler);
-        return new TurTikaFileAttributes(file, contentFile.toString(), metadata);
-    }
-
-    private static EmbeddedDocumentExtractor createEmbeddedDocumentExtractor(StringBuilder contentFile) {
-        return new EmbeddedDocumentExtractor() {
-            @Override
-            public boolean shouldParseEmbedded(Metadata metadata) {
-                return true;
-            }
-
-            @Override
-            public void parseEmbedded(InputStream stream, ContentHandler handler, Metadata metadata,
-                    boolean outputHtml) throws IOException {
-                parseDocument(stream).ifPresent(contentFile::append);
-            }
-        };
-    }
-
-    private static ParseContext createParseContext(AutoDetectParser parser) {
-        TesseractOCRConfig config = new TesseractOCRConfig();
-        PDFParserConfig pdfConfig = new PDFParserConfig();
-        pdfConfig.setExtractInlineImages(true);
-
-        ParseContext parseContext = new ParseContext();
-        parseContext.set(TesseractOCRConfig.class, config);
-        parseContext.set(PDFParserConfig.class, pdfConfig);
-        parseContext.set(Parser.class, parser);
-        return parseContext;
+    /**
+     * Adapts the neutral {@link VigletExtractedContent} from
+     * {@link VigletContentExtractor} (Block Q / T374) into Turing's
+     * {@link TurTikaFileAttributes}. Returns {@code null} when extraction failed
+     * or the source file was missing.
+     */
+    private static TurTikaFileAttributes toTikaAttributes(VigletExtractedContent content) {
+        return content == null ? null
+                : new TurTikaFileAttributes(content.file(), content.content(), content.metadata());
     }
 
     public static TurFileAttributes documentToText(MultipartFile multipartFile) {
@@ -337,6 +291,9 @@ public class TurFileUtils {
             connection.setInstanceFollowRedirects(false);
             connection.setRequestMethod("GET");
             connection.setRequestProperty("Host", originalHost);
+            connection.setRequestProperty("User-Agent", USER_AGENT);
+            connection.setRequestProperty("Accept", ACCEPT);
+            connection.setRequestProperty("Accept-Language", ACCEPT_LANGUAGE);
 
             return connection;
         } catch (IOException e) {
@@ -344,41 +301,15 @@ public class TurFileUtils {
         }
     }
 
+    /**
+     * T643 / §XXXVII.5 — delegates to the single hardened validator
+     * {@link com.viglet.turing.spring.security.ssrf.TurSsrfGuard} so this
+     * long-standing download-path guard also blocks IPv6 ULA ({@code fc00::/7}),
+     * closing the gap where {@code isSiteLocalAddress()} only matched the
+     * deprecated {@code fec0::/10}.
+     */
     public static boolean isSafe(InetAddress address) {
-        if (address.isLoopbackAddress() ||
-                address.isSiteLocalAddress() ||
-                address.isLinkLocalAddress() ||
-                address.isAnyLocalAddress() ||
-                address.isMulticastAddress()) {
-            return false;
-        }
-
-        return isSafeInet4Address(address);
-    }
-
-    private static boolean isSafeInet4Address(InetAddress address) {
-        if (address instanceof Inet4Address) {
-            byte[] addr = address.getAddress();
-            int firstOctet = addr[0] & 0xFF;
-            int secondOctet = addr[1] & 0xFF;
-
-            // 10.0.0.0/8
-            if (firstOctet == 10)
-                return false;
-
-            // 172.16.0.0/12
-            if (firstOctet == 172 && (secondOctet >= 16 && secondOctet <= 31))
-                return false;
-
-            // 192.168.0.0/16
-            if (firstOctet == 192 && secondOctet == 168)
-                return false;
-
-            // 100.64.0.0/10 (CGNAT)
-            if (firstOctet == 100 && (secondOctet >= 64 && secondOctet <= 127))
-                return false;
-        }
-        return true;
+        return com.viglet.turing.spring.security.ssrf.TurSsrfGuard.isSafeAddress(address);
     }
 
     private static boolean isRedirectResponse(int responseCode) {
@@ -454,23 +385,35 @@ public class TurFileUtils {
     }
 
     public static Optional<String> parseDocument(InputStream stream) throws IOException {
-        AutoDetectParser parser = new AutoDetectParser();
-        BodyContentHandler handler = new BodyContentHandler(-1);
-        Metadata metadata = new Metadata();
-        ParseContext parseContext = createParseContext(parser);
+        return VigletContentExtractor.parseDocument(stream);
+    }
 
-        File tempFile = createTempFile();
-        try {
-            Files.copy(stream, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            try (FileInputStream fileInputStream = new FileInputStream(tempFile)) {
-                parser.parse(fileInputStream, handler, metadata, parseContext);
-                return Optional.of(handler.toString());
-            }
-        } catch (IOException | SAXException | TikaException e) {
-            log.error("Error parsing document: {}", e.getMessage(), e);
-            return Optional.empty();
-        } finally {
-            tempFile.deleteOnExit();
+    /**
+     * T739 / §XLVIII — parse an already-fetched HTML document (e.g. the rendered
+     * DOM returned by a headless-browser sidecar) into plain text via the same
+     * Tika extraction the URL/file paths use. No network access — the HTML is
+     * supplied by the caller, which is responsible for having SSRF-guarded and
+     * fetched it. Returns an empty {@link TurFileAttributes} (never {@code null})
+     * when the input is blank or unparseable.
+     *
+     * @param html the raw HTML markup
+     * @param name a display name for the source (used as the file name / title)
+     */
+    public static TurFileAttributes htmlToText(String html, String name) {
+        if (html == null || html.isBlank()) {
+            return new TurFileAttributes();
+        }
+        try (InputStream in = new java.io.ByteArrayInputStream(
+                html.getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+            String text = parseDocument(in).orElse("");
+            return TurFileAttributes.builder()
+                    .name(name)
+                    .title(name)
+                    .content(text)
+                    .build();
+        } catch (IOException e) {
+            log.error("Error parsing rendered HTML for {}: {}", name, e.getMessage());
+            return new TurFileAttributes();
         }
     }
 

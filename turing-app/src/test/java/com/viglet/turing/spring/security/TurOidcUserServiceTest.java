@@ -10,6 +10,8 @@ import java.time.Instant;
 import java.util.HashSet;
 import java.util.Set;
 
+import com.viglet.turing.properties.TurConfigProperties;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -33,6 +35,10 @@ import org.springframework.security.oauth2.core.oidc.user.OidcUser;
  */
 @ExtendWith(MockitoExtension.class)
 class TurOidcUserServiceTest {
+    // Fixed token timestamps — the user service reads claims only; it never
+    // validates expiry against the clock, so a literal keeps these deterministic.
+    private static final Instant FIXED_NOW = Instant.parse("2026-06-15T12:00:00Z");
+
 
     @Mock
     private TurAuthorityResolver turAuthorityResolver;
@@ -87,8 +93,8 @@ class TurOidcUserServiceTest {
     void shouldHandleNullPreferredUsername() {
         OidcIdToken idToken = OidcIdToken.withTokenValue("token")
                 .claim("sub", "no-pref")
-                .issuedAt(Instant.now())
-                .expiresAt(Instant.now().plusSeconds(3600))
+                .issuedAt(FIXED_NOW)
+                .expiresAt(FIXED_NOW.plusSeconds(3600))
                 .build();
 
         TurOidcUserService testService = createTestServiceWithBaseUser(
@@ -168,7 +174,7 @@ class TurOidcUserServiceTest {
     }
 
     private TurOidcUserService createTestServiceWithBaseUser(OidcUser baseUser) {
-        return new TurOidcUserService(turAuthorityResolver) {
+        return new TurOidcUserService(turAuthorityResolver, new TurConfigProperties()) {
             @Override
             public OidcUser loadUser(OidcUserRequest userRequest) {
                 Set<GrantedAuthority> authorities = new HashSet<>(baseUser.getAuthorities());
@@ -183,8 +189,8 @@ class TurOidcUserServiceTest {
         return OidcIdToken.withTokenValue("id-token-" + username)
                 .claim("sub", "sub-" + username)
                 .claim("preferred_username", username)
-                .issuedAt(Instant.now())
-                .expiresAt(Instant.now().plusSeconds(3600))
+                .issuedAt(FIXED_NOW)
+                .expiresAt(FIXED_NOW.plusSeconds(3600))
                 .build();
     }
 
@@ -211,8 +217,8 @@ class TurOidcUserServiceTest {
         OAuth2AccessToken accessToken = new OAuth2AccessToken(
                 OAuth2AccessToken.TokenType.BEARER,
                 "test-access-token",
-                Instant.now(),
-                Instant.now().plusSeconds(3600));
+                FIXED_NOW,
+                FIXED_NOW.plusSeconds(3600));
 
         OidcIdToken idToken = createIdToken(username);
 

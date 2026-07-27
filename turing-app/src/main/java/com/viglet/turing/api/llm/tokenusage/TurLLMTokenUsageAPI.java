@@ -1,5 +1,6 @@
 package com.viglet.turing.api.llm.tokenusage;
 
+import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -25,6 +26,14 @@ public class TurLLMTokenUsageAPI {
 
     public TurLLMTokenUsageAPI(TurLLMTokenUsageRepository tokenUsageRepository) {
         this.tokenUsageRepository = tokenUsageRepository;
+    }
+
+    /** Source of "now" for the default (current-month) report; tests pin it. */
+    private Clock clock = Clock.systemDefaultZone();
+
+    /** Visible for testing — pin the clock so the default month is deterministic. */
+    void setClockForTest(Clock clock) {
+        this.clock = clock;
     }
 
     public record DailyUsageRow(
@@ -69,7 +78,7 @@ public class TurLLMTokenUsageAPI {
         if (month != null && !month.isBlank()) {
             monthDate = LocalDate.parse(month + "-01", DateTimeFormatter.ISO_LOCAL_DATE);
         } else {
-            monthDate = LocalDate.now().withDayOfMonth(1);
+            monthDate = LocalDate.now(clock).withDayOfMonth(1);
         }
 
         LocalDateTime start = monthDate.atStartOfDay();

@@ -9,6 +9,7 @@
  */
 package com.viglet.turing.service.chatslots;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -62,6 +63,14 @@ public class TurSubmissionRetentionService {
         this.submissionRepository = submissionRepository;
     }
 
+    /** Source of "now" for the retention cutoff; tests pin it for determinism. */
+    private Clock clock = Clock.systemDefaultZone();
+
+    /** Visible for testing — pin the clock so the cutoff is deterministic. */
+    void setClockForTest(Clock clock) {
+        this.clock = clock;
+    }
+
     /**
      * Deletes every submission older than the configured day threshold for
      * each agent in {@code RETAIN_DAYS} mode. Agents in {@code RETAIN_FOREVER}
@@ -72,27 +81,26 @@ public class TurSubmissionRetentionService {
      */
     @Transactional
     public int purgeExpiredSubmissions() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(clock);
         int totalDeleted = 0;
         for (TurAIAgent agent : agentRepository.findAll()) {
             if (agent.getSubmissionRetention() != TurSubmissionRetention.RETAIN_DAYS) {
                 continue;
             }
             Integer days = agent.getSubmissionRetentionDays();
-            if (days == null || days <= 0) {
-                // RETAIN_DAYS selected but no (or invalid) threshold — treat as
-                // disabled so a half-configured policy never silently deletes.
-                continue;
-            }
-            LocalDateTime cutoff = now.minusDays(days);
-            List<TurChatFlowSubmission> expired =
-                    submissionRepository.findByFlow_TurAIAgent_IdAndCompletedAtBefore(agent.getId(), cutoff);
-            if (!expired.isEmpty()) {
-                submissionRepository.deleteAll(expired);
-                totalDeleted += expired.size();
-                log.info("[SubmissionRetention] deleted {} submission(s) older than {} day(s) "
-                        + "(cutoff={}) for agent '{}' ({})",
-                        expired.size(), days, cutoff, agent.getTitle(), agent.getId());
+            // RETAIN_DAYS selected but no (or invalid) threshold — treat as
+            // disabled so a half-configured policy never silently deletes.
+            if (days != null && days > 0) {
+                LocalDateTime cutoff = now.minusDays(days);
+                List<TurChatFlowSubmission> expired =
+                        submissionRepository.findByFlow_TurAIAgent_IdAndCompletedAtBefore(agent.getId(), cutoff);
+                if (!expired.isEmpty()) {
+                    submissionRepository.deleteAll(expired);
+                    totalDeleted += expired.size();
+                    log.info("[SubmissionRetention] deleted {} submission(s) older than {} day(s) "
+                            + "(cutoff={}) for agent '{}' ({})",
+                            expired.size(), days, cutoff, agent.getTitle(), agent.getId());
+                }
             }
         }
         if (totalDeleted == 0) {

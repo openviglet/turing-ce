@@ -296,6 +296,93 @@ public interface TurSearchEnginePlugin {
                 "moreLikeThisStandalone not supported by " + getPluginType());
     }
 
+    // ---- Similar documents (T384) ----------------------------------------
+
+    /**
+     * T384 / §XX.4 — public "documents similar to this id" retrieval over a
+     * site's live index. Returns up to {@code rows} documents most like the one
+     * identified by {@code id}, scored by the engine's native MoreLikeThis
+     * (Solr {@code /mlt} handler keyed by {@code id:<id>}, falling back to a BM25
+     * disjunction over the seed's text; Elasticsearch {@code more_like_this} with
+     * the seed text as {@code like}). The seed document itself is excluded.
+     *
+     * <p>This is the lexical half of the similar-documents seam; the semantic
+     * (vector-neighbor) half lives in {@code TurSNHybridRankingService.findNeighbors}
+     * and is orchestrated by {@code TurSNSimilarDocumentsService}.
+     *
+     * <p>Default returns an empty list so engines without a MoreLikeThis
+     * capability (Lucene-embedded) degrade silently rather than throwing.
+     *
+     * @param siteLocale the (site, locale) index to query
+     * @param id         the seed document id
+     * @param rows       maximum number of similar documents to return
+     * @return up to {@code rows} similar documents, seed excluded; empty when
+     *         the id is blank, the index is missing, or nothing is similar
+     * @since 2026.3.4
+     */
+    default List<com.viglet.turing.commons.se.similar.TurSESimilarResult> getSimilarDocuments(
+            TurSNSiteLocale siteLocale, String id, int rows) {
+        return List.of();
+    }
+
+    /**
+     * T384 / §XX.4 — fetches the standard fields ({@code id}, {@code title},
+     * {@code type}, {@code url}, {@code abstract}, {@code text}) for the given
+     * document ids, preserving the input order and dropping ids that don't
+     * resolve. Used to read a seed document's content for vector-neighbor
+     * retrieval and to hydrate neighbor ids into renderable results.
+     *
+     * <p>Default returns an empty list.
+     *
+     * @param siteLocale the (site, locale) index to query
+     * @param ids        the document ids to fetch
+     * @return one field map per resolved id, in {@code ids} order
+     * @since 2026.3.4
+     */
+    default List<Map<String, Object>> getDocumentsByIds(TurSNSiteLocale siteLocale, List<String> ids) {
+        return List.of();
+    }
+
+    // ---- Synonyms (T663 / §XXXIX, Block AP) ------------------------------
+
+    /**
+     * T663 — whether this engine can apply <em>query-time</em> synonyms without
+     * a reindex (Algolia's model). Solr (managed synonyms + reload) and
+     * Elasticsearch (Synonyms API) return {@code true}; the default is
+     * {@code false} so an engine that hasn't wired synonyms degrades honestly.
+     */
+    default boolean supportsSynonyms() {
+        return false;
+    }
+
+    /**
+     * T663 — pushes the (site, locale) synonym rules into the engine's
+     * query-time analysis so a search for any term in a rule matches records
+     * containing the equivalents, <em>without</em> reindexing. The rules are the
+     * engine-neutral projection built by the synonym service from the
+     * Turing-owned source of truth ({@code TurSNSynonym}).
+     *
+     * <p>Implementations MUST NOT silently drop a rule they can't represent —
+     * they report it in {@link TurSESynonymApplyResult#unsupportedTypes()} (e.g.
+     * {@code PLACEHOLDER} on Lucene) so the admin UI can show an honest
+     * capability banner. Corrections degrade to one-way synonyms with a warning
+     * on engines without a per-synonym typo budget.
+     *
+     * <p>The default returns {@link TurSESynonymApplyResult#unsupported} — an
+     * engine that doesn't override advertises no synonym support rather than
+     * throwing.
+     *
+     * @param seInstance the SE instance hosting the index/core
+     * @param indexName  the target index/core name
+     * @param locale     the locale the rules apply to
+     * @param rules      the synonym rules to apply (replacing any prior set)
+     * @return what was applied and what could not be represented
+     */
+    default TurSESynonymApplyResult applySynonyms(TurSEInstance seInstance, String indexName,
+            Locale locale, List<TurSESynonymRule> rules) {
+        return TurSESynonymApplyResult.unsupported(getPluginType());
+    }
+
     // ---- Copy field (Solr-specific; no-op for schema-less engines) -------
 
     /**
@@ -341,9 +428,95 @@ public interface TurSearchEnginePlugin {
         return List.of();
     }
 
+    // ---- Spell check (T686 / §XLI.2, Block AR) ---------------------------
+
+    /**
+     * T686 / §XLI.2 — "did you mean" spell correction for the given query term
+     * on a site's live index. Returns a
+     * {@link com.viglet.turing.commons.se.result.spellcheck.TurSESpellCheckResult} whose
+     * {@code corrected} flag is set (with a non-empty {@code correctedText})
+     * only when the engine found a better-spelled alternative; otherwise an
+     * uncorrected result.
+     *
+     * <p>Spell-check was originally hardwired to Solr
+     * ({@code TurSolr.spellCheckTerm}), so on a Lucene site the "did you mean"
+     * suggestion never appeared. This seam lets every engine expose the
+     * capability behind one contract:
+     * <ul>
+     *   <li>Solr: delegates to the {@code /tur_spell} handler.</li>
+     *   <li>Lucene-embedded: a {@code DirectSpellChecker} over the live index
+     *       terms (no side dictionary to maintain).</li>
+     *   <li>Engines without a spell-check capability keep the default and
+     *       degrade silently to an uncorrected result rather than throwing.</li>
+     * </ul>
+     *
+     * @param siteName the SN site name
+     * @param term     the raw query term to spell-check
+     * @param locale   the locale whose (site, locale) index to consult
+     * @return the correction result; never {@code null}
+     * @since 2026.3.4
+     */
+    default com.viglet.turing.commons.se.result.spellcheck.TurSESpellCheckResult spellCheck(
+            String siteName, String term, Locale locale) {
+        return new com.viglet.turing.commons.se.result.spellcheck.TurSESpellCheckResult();
+    }
+
     // ---- Monitoring ------------------------------------------------------
 
     long getDocumentTotal(TurSNSiteLocale turSNSiteLocale);
+
+    /**
+     * T388 — counts the documents in the site's index (for the given locale)
+     * that <em>populate</em> the named field, i.e. carry a non-null/non-empty
+     * value for it. This is the numerator behind per-field coverage /
+     * completeness observability: dividing by {@link #getDocumentTotal} yields
+     * the fraction of documents a source actually fills in for that field.
+     *
+     * <p>It honours the T381 grounding invariant — an absent field lowers
+     * coverage rather than being counted as a present empty value — by relying
+     * on each engine's "field exists" primitive (Solr {@code field:[* TO *]},
+     * Lucene {@code FieldExistsQuery}, Elasticsearch {@code exists}).
+     *
+     * <p>The default returns {@code -1}, meaning "this engine cannot report
+     * field presence"; callers should treat a negative result as
+     * <em>unknown</em> (not zero) so the UI can degrade gracefully instead of
+     * reporting a misleading 0% coverage.
+     *
+     * @param turSNSiteLocale the site locale whose index/core to query
+     * @param fieldName       the field whose presence to count
+     * @return number of documents populating the field, or {@code -1} if the
+     *         engine does not support field-presence counting
+     * @since 2026.3.1
+     */
+    default long getDocumentCountWithField(TurSNSiteLocale turSNSiteLocale, String fieldName) {
+        return -1L;
+    }
+
+    /**
+     * T472 — counts the documents in the site's index (for the given locale)
+     * whose numeric {@code fieldName} value is <em>strictly below</em>
+     * {@code threshold}. This is the bucketing primitive behind the
+     * audience-content-fit coverage report: counting documents whose
+     * {@code content_fit_score} falls under the "too complex" / "borderline"
+     * thresholds.
+     *
+     * <p>Implemented with each engine's exclusive-upper range query (Solr
+     * {@code field:[* TO threshold}}, Elasticsearch {@code range lt}). The
+     * default returns {@code -1}, meaning "this engine cannot report range
+     * counts"; callers should treat a negative result as <em>unknown</em> and
+     * degrade gracefully (mirrors {@link #getDocumentCountWithField}).
+     *
+     * @param turSNSiteLocale the site locale whose index/core to query
+     * @param fieldName       the numeric field to range over
+     * @param threshold       exclusive upper bound
+     * @return number of documents with {@code fieldName < threshold}, or
+     *         {@code -1} if the engine does not support range counting
+     * @since 2026.3.4
+     */
+    default long getDocumentCountWithFieldBelow(TurSNSiteLocale turSNSiteLocale, String fieldName,
+            int threshold) {
+        return -1L;
+    }
 
     /**
      * Returns system information about the search engine instance,

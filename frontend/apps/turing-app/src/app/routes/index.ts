@@ -1,28 +1,6 @@
-export { AdminRoutes } from "./admin.routes";
-export { AIAgentRoutes } from "./ai-agent.routes";
+// Block AG (T570) — the legacy console was retired; only two route groups
+// survive outside the bento tree: the bento tree itself and the standalone,
+// chrome-free voice kiosk. All the old per-surface `*.routes.tsx` files were
+// deleted with the console pages they mounted.
 export { BentoRoutes } from "./bento.routes";
-export { EmbeddingModelRoutes } from "./embedding-model.routes";
-export { AssetRoutes } from "./asset.routes";
-export { SkillRoutes } from "./skill.routes";
-export { TenantRoutes } from "./tenant.routes";
-export { GitRoutes } from "./git.routes";
-export { PageRoutes } from "./page.routes";
-export { ChatRoutes } from "./chat.routes";
-export { ExchangeRoutes } from "./exchange.routes";
-export { GraphqlRoutes } from "./graphql.routes";
-export { IntegrationRoutes } from "./integration.routes";
-export { LLMRoutes } from "./llm.routes";
-export { LoggingRoutes } from "./logging.routes";
-export { MarketplaceRoutes } from "./marketplace.routes";
-export { McpServerRoutes } from "./mcp-server.routes";
-export { PersonaRoutes } from "./persona.routes";
-export { CustomToolRoutes } from "./custom-tool.routes";
-export { RoutineRoutes } from "./routine.routes";
-export { ChatWebhookRoutes } from "./webhook.routes";
-export { SERoutes } from "./se.routes";
-export { SNRoutes } from "./sn.routes";
-export { StoreRoutes } from "./store.routes";
-export { TokenUsageRoutes } from "./token-usage.routes";
-export { ChatAnalyticsRoutes } from "./chat-analytics.routes";
-export { ParkedConversationsRoutes } from "./parked-conversations.routes";
-export { UserRoutes } from "./user.routes";
+export { VoiceKioskRoutes } from "./voice-kiosk.routes";

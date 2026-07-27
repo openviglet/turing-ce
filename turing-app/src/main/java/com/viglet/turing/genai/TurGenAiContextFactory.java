@@ -29,13 +29,16 @@ public class TurGenAiContextFactory {
     private final TurLlmModelFactory llmModelFactory;
     private final TurSecretCryptoService turSecretCryptoService;
     private final TurRagContextBuilder turRagContextBuilder;
+    private final TurDefaultAgentResolver turDefaultAgentResolver;
 
     public TurGenAiContextFactory(TurLlmModelFactory llmModelFactory,
             TurSecretCryptoService turSecretCryptoService,
-            TurRagContextBuilder turRagContextBuilder) {
+            TurRagContextBuilder turRagContextBuilder,
+            TurDefaultAgentResolver turDefaultAgentResolver) {
         this.llmModelFactory = llmModelFactory;
         this.turSecretCryptoService = turSecretCryptoService;
         this.turRagContextBuilder = turRagContextBuilder;
+        this.turDefaultAgentResolver = turDefaultAgentResolver;
     }
 
     public TurGenAiContext build(TurSNSiteGenAi turSNSiteGenAi) {
@@ -43,11 +46,27 @@ public class TurGenAiContextFactory {
     }
 
     public TurGenAiContext build(TurSNSiteGenAi turSNSiteGenAi, String collectionNameOverride) {
-        if (turSNSiteGenAi == null) {
+        // T622 — fall back to the global Default AI Agent when the site declares
+        // none (fail-open, gated on a default being set). Note turSNSiteGenAi may
+        // be null here (a site with no GenAI binding at all): the resolver still
+        // returns the default agent, so the demo's search-only seed can chat.
+        TurAIAgent agent = turDefaultAgentResolver.resolveEffectiveAgent(turSNSiteGenAi);
+        if (agent == null || agent.getEnabled() != 1 || !agent.isRagEnabled()) {
             return TurGenAiContext.disabled();
         }
-        TurAIAgent agent = turSNSiteGenAi.getTurAIAgent();
-        if (agent == null || agent.getEnabled() != 1 || !agent.isRagEnabled()) {
+
+        // T790 / §LIV.1 (Block BF) — a site explicitly set to VECTORLESS_STRUCTURED
+        // opts out of embeddings entirely. Return a disabled context so NEITHER the
+        // batch reindex (reindexVectorStore → reindexLocale) NOR the per-document
+        // real-time index path (TurSNGenAi.addDocument) ever embeds — regardless of
+        // whether the effective agent (the site's own, or the global Default AI Agent
+        // T622 fallback) has RAG enabled. This makes the per-site opt-out explicit and
+        // fully decoupled from the default-agent fallback. VECTOR and HYBRID still
+        // embed (needsVectorSetup() == true).
+        if (turSNSiteGenAi != null && turSNSiteGenAi.getKnowledgeBaseMode() != null
+                && !turSNSiteGenAi.getKnowledgeBaseMode().needsVectorSetup()) {
+            log.debug("Vector context skipped: SN site GenAI knowledge-base mode is VECTORLESS_STRUCTURED "
+                    + "(no embeddings), even though the effective agent has RAG enabled.");
             return TurGenAiContext.disabled();
         }
 
@@ -85,7 +104,15 @@ public class TurGenAiContextFactory {
                 .chatModel(chatModel)
                 .enabled(true)
                 .systemPrompt(agent.getSystemPrompt())
+                .groundingMode(agent.getGroundingMode())
                 .ragInfrastructure(infra)
+                // T500 — thread the per-site full-context opt-in + budget through
+                // so TurSNGenAi.retrieveDocuments can bypass top-K when the corpus
+                // fits. Default off → unchanged top-K path. When the site has no
+                // GenAI binding (T622 default-agent fallback) there are no per-site
+                // overrides, so full-context stays off.
+                .fullContextEnabled(turSNSiteGenAi != null && turSNSiteGenAi.isFullContextAnsweringEnabled())
+                .fullContextTokenBudget(turSNSiteGenAi == null ? 0 : turSNSiteGenAi.getFullContextTokenBudget())
                 .build();
     }
 

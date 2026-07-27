@@ -44,6 +44,21 @@ The breach surface is every path that bypasses the ORM. Each is closed:
 > globally-unique UUIDs, so they cannot collide across tenants; the SN core uses
 > the human-chosen site *name* and therefore IS prefixed.
 
+> **On-demand SN core provisioning (T335).** The prefixed SN core is created at
+> site/locale creation (`TurSNTemplate.createSolrCore`). On a **standalone Solr**
+> (`turing.solr.cloud=false` — the Cloud topology, started with
+> `solr-precreate turing`) a tenant whose core was never provisioned (engine
+> offline at creation time, restored without the core, etc.) would otherwise
+> `404` on its first index. `TurSNProcessQueue` now self-heals: before the first
+> CREATE for a `(site, locale)` in a batch it verifies the core exists and
+> creates it on demand from the locale's configset (deduped per batch — one
+> `indexExists` check per distinct core, not per document). **Operator
+> requirement:** the standalone Solr must expose the `en`/`es`/`pt`/`ca`
+> configsets (the project Solr image copies them to
+> `/var/solr/data/configsets`); a bare `solr-precreate turing` image only ships
+> `_default`, so mount/add the configsets or core creation will fail with a
+> missing-configset error.
+
 ## How to make a NEW entity tenant-safe
 
 1. **Tenant-owned content** (an agent's/site's data): add
@@ -73,6 +88,15 @@ The breach surface is every path that bypasses the ORM. Each is closed:
 - **Resolution priority** (`TurTenantResolutionFilter`): JWT `tenant` claim →
   session attribute → subdomain → `X-Turing-Tenant` header. A suspended tenant
   or a missing active membership is rejected with 403 (platform admins bypass).
+- **Server-to-server propagation (T334)**: an internal product (e.g. Dumont
+  calling `http://turing:2700` on behalf of an end user) carries no end-user
+  membership. Set `turing.tenancy.internal-token` and have the caller send that
+  value in `X-Turing-Internal-Token` alongside `X-Turing-Tenant`; the filter
+  then honours the stamped tenant **without** the membership check (suspension
+  still blocks; comparison is constant-time). Empty token = feature off. Prefer
+  forwarding the end user's bearer token — the JWT-claim + membership path above
+  then applies unchanged and no internal token is needed. Share the token only
+  over a trusted internal network.
 
 ## Quotas (plan-based)
 

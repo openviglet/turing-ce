@@ -75,15 +75,18 @@ public class TurSkillFileService {
     private final TurSkillCatalogService catalogService;
     private final TurSkillFrontmatterParser frontmatterParser;
     private final TurConfigProperties configProperties;
+    private final com.viglet.turing.properties.TurAbuseControlProperty abuseControlProperty;
 
     public TurSkillFileService(TurStorageService storageService, TurSkillRepository skillRepository,
             TurSkillCatalogService catalogService, TurSkillFrontmatterParser frontmatterParser,
-            TurConfigProperties configProperties) {
+            TurConfigProperties configProperties,
+            com.viglet.turing.properties.TurAbuseControlProperty abuseControlProperty) {
         this.storageService = storageService;
         this.skillRepository = skillRepository;
         this.catalogService = catalogService;
         this.frontmatterParser = frontmatterParser;
         this.configProperties = configProperties;
+        this.abuseControlProperty = abuseControlProperty;
     }
 
     public boolean isEnabled() {
@@ -315,13 +318,12 @@ public class TurSkillFileService {
                     continue;
                 }
                 String within = root.isEmpty() ? entryPath : entryPath.substring(root.length() + 1);
-                if (within.isBlank()) {
-                    continue;
+                if (!within.isBlank()) {
+                    byte[] data = entry.getValue();
+                    String objectName = destPrefix + within;
+                    storageService.uploadStream(objectName, new ByteArrayInputStream(data), data.length,
+                            storageService.guessContentType(within));
                 }
-                byte[] data = entry.getValue();
-                String objectName = destPrefix + within;
-                storageService.uploadStream(objectName, new ByteArrayInputStream(data), data.length,
-                        storageService.guessContentType(within));
             }
             imported.add(slug);
         }
@@ -332,7 +334,10 @@ public class TurSkillFileService {
 
     /** Read the ZIP fully into memory, skipping directories and Mac/hidden junk. */
     private Map<String, byte[]> readZip(MultipartFile file) {
+        var caps = abuseControlProperty.getChat();
         Map<String, byte[]> entries = new LinkedHashMap<>();
+        int count = 0;
+        long total = 0L;
         try (ZipInputStream zis = new ZipInputStream(file.getInputStream())) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
@@ -341,13 +346,54 @@ public class TurSkillFileService {
                     zis.closeEntry();
                     continue;
                 }
-                entries.put(stripLeadingSlash(name), zis.readAllBytes());
+                // T645 / §XXXVII.7 — Zip-Slip: reject an entry whose name escapes
+                // the destination (a `..` segment). Fail closed on the whole
+                // archive rather than silently dropping — a traversal entry marks
+                // a malicious ZIP. Defense-in-depth over the unconditional key
+                // containment now enforced in TurTenantScopedStorageService.
+                if (hasTraversalSegment(name)) {
+                    throw new IllegalArgumentException(
+                            "ZIP entry escapes the destination (path traversal): " + entry.getName());
+                }
+                // T648 / §XXXVII.10 — zip-bomb guard: cap entry count + per-entry
+                // (bounded read) + total uncompressed size.
+                if (caps.getMaxZipEntries() > 0 && ++count > caps.getMaxZipEntries()) {
+                    throw new IllegalArgumentException(
+                            "ZIP has too many entries (max " + caps.getMaxZipEntries() + ").");
+                }
+                byte[] data = readEntryBounded(zis, caps.getMaxZipEntryBytes(), name);
+                total += data.length;
+                if (caps.getMaxZipTotalBytes() > 0 && total > caps.getMaxZipTotalBytes()) {
+                    throw new IllegalArgumentException(
+                            "ZIP total uncompressed size exceeds " + caps.getMaxZipTotalBytes() + " bytes.");
+                }
+                entries.put(stripLeadingSlash(name), data);
                 zis.closeEntry();
             }
         } catch (IOException e) {
             throw new IllegalArgumentException("Could not read the uploaded ZIP.", e);
         }
         return entries;
+    }
+
+    /**
+     * T648 / §XXXVII.10 — read one ZIP entry, aborting if it exceeds {@code maxBytes}
+     * uncompressed (defeats a zip bomb that would OOM a plain {@code readAllBytes}).
+     */
+    private static byte[] readEntryBounded(InputStream in, long maxBytes, String name) throws IOException {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        long readTotal = 0;
+        int n;
+        while ((n = in.read(buffer)) != -1) {
+            readTotal += n;
+            if (maxBytes > 0 && readTotal > maxBytes) {
+                throw new IllegalArgumentException(
+                        "ZIP entry '" + name + "' exceeds the maximum size of " + maxBytes + " bytes.");
+            }
+            out.write(buffer, 0, n);
+        }
+        return out.toByteArray();
     }
 
     /** Top-most folders that hold a {@code SKILL.md}; {@code ""} means the ZIP root. */
@@ -479,6 +525,9 @@ public class TurSkillFileService {
     }
 
     private static String relativize(String root, String objectName) {
+        if (root == null || objectName == null) {
+            return "";
+        }
         if (objectName.equals(root)) {
             return "";
         }
@@ -490,12 +539,28 @@ public class TurSkillFileService {
     }
 
     private static String lastSegment(String path) {
+        if (path == null) {
+            return "";
+        }
         int slash = path.lastIndexOf('/');
         return slash >= 0 ? path.substring(slash + 1) : path;
     }
 
     private static boolean isJunk(String name) {
         return name.startsWith("__MACOSX") || name.contains("/.") || name.startsWith(".");
+    }
+
+    /** True when any {@code /}- or {@code \}-segment of the name is {@code ..}. */
+    static boolean hasTraversalSegment(String name) {
+        if (name == null) {
+            return false;
+        }
+        for (String segment : name.replace('\\', '/').split("/")) {
+            if (segment.equals("..")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String stripTrailingSlash(String value) {

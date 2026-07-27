@@ -13,8 +13,6 @@
 
 package com.viglet.turing.genai;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -22,43 +20,46 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 
 import com.viglet.turing.genai.TurAgentChatExecutor.ChatMessageItem;
-import com.viglet.turing.genai.flow.TurChatFlowEngineService;
-import com.viglet.turing.genai.persona.TurPersonaPromptComposer;
-import com.viglet.turing.genai.skill.activation.TurSkillRunnerService;
-import com.viglet.turing.genai.tool.TurMcpInstructionsProvider;
+import com.viglet.turing.genai.prompt.TurMessageAssemblyContext;
+import com.viglet.turing.genai.prompt.TurMessageAssemblyPipeline;
+import com.viglet.turing.genai.prompt.TurPromptAssembly;
+import com.viglet.turing.genai.prompt.TurPromptAssemblyContext;
+import com.viglet.turing.genai.prompt.TurPromptAssemblyPipeline;
+import com.viglet.turing.genai.prompt.TurPromptMessage;
 import com.viglet.turing.observability.TurChatPipelineObservation;
 import com.viglet.turing.observability.TurMeterNames;
 import com.viglet.turing.persistence.model.agent.TurAIAgent;
-import com.viglet.turing.persistence.model.persona.TurPersona;
-import com.viglet.turing.service.chatmemory.TurChatMemoryCompressionService;
-import com.viglet.turing.service.chatmemory.TurChatMemoryRelevanceRetriever;
 
 /**
  * Composes the {@code List<Message>} that ships to the LLM:
  * <ol>
- *   <li>Fuses the agent / RAG-override base prompt with the flow-engine's
- *       per-node addendum (T31 cached) and the active persona's voice +
- *       constraints + brand-context block (T31 cached).</li>
- *   <li>Enriches the history with the T30 conversation-relevance retriever
- *       so older turns relevant to the latest user message get pinned into
- *       the prompt.</li>
+ *   <li>Builds the system prompt through the single-pass
+ *       {@link com.viglet.turing.genai.prompt.TurPromptAssemblyPipeline}
+ *       contributor chain (persona voice + constraints + brand-context, agent /
+ *       RAG-override base, MCP, opt-in capabilities, skills, flow addendum) — the
+ *       same segments the Live Preview renders.</li>
+ *   <li>Builds the history-prefix (T115 memory summary + T30 relevance-retrieved
+ *       older turns) through the {@code TurMessageAssemblyPipeline} contributor
+ *       chain (T616) and prepends it to the client history.</li>
  *   <li>Builds the ordered {@code List<Message>} (system + history fan-out
  *       into {@code UserMessage}/{@code AssistantMessage}).</li>
  * </ol>
  *
  * <p>Extracted from {@link TurAgentChatExecutor} in T33. Owns the
  * {@link TurMeterNames#STAGE_CHAT_SETUP_COMPOSE} substage timing — measured
- * around the {@link TurPersonaPromptComposer#compose} call (matches the
- * pre-T33 boundary so dashboards keep reading the same number).
+ * around the system-prompt build (matches the pre-T33 boundary so dashboards
+ * keep reading the same number). T615 retired the pre-pipeline inline
+ * system-prompt concatenation and its
+ * {@code turing.prompt.assembly.pipeline-enabled} escape hatch; T617 did the same
+ * for the history-prefix messages, deleting the inline {@code buildMemoryPrefixLegacy}
+ * path and its {@code turing.prompt.assembly.message-pipeline-enabled} flag. Both
+ * the system message and the history prefix now have a single assembly path.
  *
  * @author Alexandre Oliveira
  * @since 2026.3.1
@@ -67,81 +68,85 @@ import com.viglet.turing.service.chatmemory.TurChatMemoryRelevanceRetriever;
 @Service
 public class TurChatPromptAssembler {
 
-    private final TurChatFlowEngineService chatFlowEngineService;
-    private final TurPersonaPromptComposer personaPromptComposer;
-    private final TurChatMemoryRelevanceRetriever chatMemoryRelevanceRetriever;
-    private final TurChatMemoryCompressionService chatMemoryCompressionService;
     private final TurChatPipelineObservation chatPipelineObservation;
     private final TurChatAttachmentService chatAttachmentService;
-    private final TurMcpInstructionsProvider mcpInstructionsProvider;
-    private final TurSkillRunnerService skillRunnerService;
+    private final TurPromptAssemblyPipeline promptAssemblyPipeline;
+    private final TurMessageAssemblyPipeline messageAssemblyPipeline;
 
-    /**
-     * The rich-content rendering guidance ({@code ```html} live preview /
-     * {@code ```d2} diagrams / Chart.js). Appended to an agent's system prompt
-     * only when {@link TurAIAgent#isRichContentEnabled()} — the same file the
-     * plain-LLM chat ({@code TurLLMChatAPI}) injects unconditionally. Loaded
-     * once at startup.
-     */
-    @Value("classpath:prompts/render.md")
-    private Resource renderPromptResource;
-
-    private String renderPrompt = "";
-
-    @PostConstruct
-    void loadRenderPrompt() {
-        try {
-            renderPrompt = renderPromptResource.getContentAsString(StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            log.warn("[PromptAssembler] could not load prompts/render.md — rich-content "
-                    + "agents will fall back to the model's own formatting: {}", e.getMessage());
-            renderPrompt = "";
-        }
-    }
-
-    public TurChatPromptAssembler(TurChatFlowEngineService chatFlowEngineService,
-            TurPersonaPromptComposer personaPromptComposer,
-            TurChatMemoryRelevanceRetriever chatMemoryRelevanceRetriever,
-            TurChatMemoryCompressionService chatMemoryCompressionService,
-            TurChatPipelineObservation chatPipelineObservation,
+    public TurChatPromptAssembler(TurChatPipelineObservation chatPipelineObservation,
             TurChatAttachmentService chatAttachmentService,
-            TurMcpInstructionsProvider mcpInstructionsProvider,
-            TurSkillRunnerService skillRunnerService) {
-        this.chatFlowEngineService = chatFlowEngineService;
-        this.personaPromptComposer = personaPromptComposer;
-        this.chatMemoryRelevanceRetriever = chatMemoryRelevanceRetriever;
-        this.chatMemoryCompressionService = chatMemoryCompressionService;
+            TurPromptAssemblyPipeline promptAssemblyPipeline,
+            TurMessageAssemblyPipeline messageAssemblyPipeline) {
         this.chatPipelineObservation = chatPipelineObservation;
         this.chatAttachmentService = chatAttachmentService;
-        this.mcpInstructionsProvider = mcpInstructionsProvider;
-        this.skillRunnerService = skillRunnerService;
+        this.promptAssemblyPipeline = promptAssemblyPipeline;
+        this.messageAssemblyPipeline = messageAssemblyPipeline;
     }
 
     /**
-     * Produce the final {@code List<Message>} for the LLM call.
-     *
-     * @param agent the chatting agent (used by T30 for relevance opt-in)
-     * @param history the persisted conversation history (untouched by the assembler)
-     * @param conversationId nullable — null means stateless turn / no T30 enrichment
-     * @param flowContext nullable — null means no chat flow governs this turn
-     * @param effectivePersona the post-walk persona (single resolution per §I.5 step 2)
-     * @param lastUserMessage the latest user message (drives T30 relevance + few-shot examples)
-     * @param baseSystemPrompt either the agent's own system prompt or a RAG override
+     * Block AL / T613 + T615 — build the system prompt through the single-pass
+     * {@link TurPromptAssemblyPipeline}. The contributor chain
+     * ({@code persona → agent-base → MCP → capability → skill → flow}) produces
+     * the same labeled segments the Live Preview renders, so runtime and preview
+     * can never drift. This is now the <em>only</em> assembly path: T615 retired
+     * the pre-pipeline inline concatenation and its
+     * {@code turing.prompt.assembly.pipeline-enabled} escape hatch once the
+     * pipeline had soaked in production. Every prompt source (persona, agent base,
+     * MCP, each opt-in capability block, skills, flow) owns its text in its own
+     * {@code TurPromptContributor}; adding a new source is "register a
+     * contributor", never "edit this class plus a parallel rebuild".
      */
-    public List<Message> assemble(TurAIAgent agent,
-            List<ChatMessageItem> history,
-            String conversationId,
-            TurAgentChatFlowContext flowContext,
-            TurPersona effectivePersona,
-            String lastUserMessage,
-            String baseSystemPrompt) {
-        return assemble(agent, history, conversationId, flowContext, effectivePersona,
-                lastUserMessage, baseSystemPrompt, null);
+    private String buildSystemPrompt(TurChatPromptRequest request, String selectedSkillId) {
+        TurAIAgent agent = request.agent();
+        TurPromptAssemblyContext context = new TurPromptAssemblyContext(
+                agent,
+                request.effectivePersona(),
+                agent.getTurEmbeddingModelInstance(),
+                request.lastUserMessage(),
+                request.baseSystemPrompt(),
+                request.flowContext(),
+                selectedSkillId);
+        TurPromptAssembly assembly = promptAssemblyPipeline.assemble(context);
+        return assembly.systemText();
     }
 
     /**
-     * Same as {@link #assemble(TurAIAgent, List, String, TurAgentChatFlowContext,
-     * TurPersona, String, String)} but additionally attaches the supplied
+     * Block AL / §XXXV.3 (T616 + T617) — build the history-prefix messages (the
+     * T115 chat-memory compression summary followed by the T30 relevance-retrieved
+     * older turns) that sit between the system message and the client's recent
+     * window.
+     *
+     * <p>Runs the {@link TurMessageAssemblyPipeline} contributor chain, so the two
+     * sources — historically concatenated inline here — live behind the same
+     * composable SPI as the system prompt. T617 deleted the inline
+     * {@code buildMemoryPrefixLegacy} escape hatch: this is now the single path.
+     * Returns an empty list when neither source contributes.
+     */
+    private List<ChatMessageItem> buildMemoryPrefix(TurAIAgent agent, String conversationId,
+            String lastUserMessage) {
+        List<TurPromptMessage> prefix = messageAssemblyPipeline.assemble(
+                new TurMessageAssemblyContext(agent, conversationId, lastUserMessage));
+        if (prefix.isEmpty()) {
+            return List.of();
+        }
+        List<ChatMessageItem> items = new ArrayList<>(prefix.size());
+        for (TurPromptMessage m : prefix) {
+            items.add(new ChatMessageItem(m.role(), m.content()));
+        }
+        return items;
+    }
+
+    /**
+     * Produce the final {@code List<Message>} for the LLM call. See
+     * {@link TurChatPromptRequest} for the meaning of each bundled input.
+     */
+    public List<Message> assemble(TurChatPromptRequest request) {
+        return assemble(request, null);
+    }
+
+    /**
+     * Same as {@link #assemble(TurChatPromptRequest)} but additionally attaches
+     * the supplied
      * {@code files} as Spring AI {@link org.springframework.ai.content.Media}
      * blocks (images) plus Tika-extracted text on the LAST user message in
      * the post-enrichment history. When {@code files} is null/empty the
@@ -151,16 +156,8 @@ public class TurChatPromptAssembler {
      *              leaves the user message untouched
      * @since 2026.3.1
      */
-    public List<Message> assemble(TurAIAgent agent,
-            List<ChatMessageItem> history,
-            String conversationId,
-            TurAgentChatFlowContext flowContext,
-            TurPersona effectivePersona,
-            String lastUserMessage,
-            String baseSystemPrompt,
-            List<MultipartFile> files) {
-        return assemble(agent, history, conversationId, flowContext, effectivePersona,
-                lastUserMessage, baseSystemPrompt, files, null);
+    public List<Message> assemble(TurChatPromptRequest request, List<MultipartFile> files) {
+        return assemble(request, files, null);
     }
 
     /**
@@ -173,82 +170,30 @@ public class TurChatPromptAssembler {
      *                        skill; null/blank offers all enabled skills
      * @since 2026.3.1
      */
-    public List<Message> assemble(TurAIAgent agent,
-            List<ChatMessageItem> history,
-            String conversationId,
-            TurAgentChatFlowContext flowContext,
-            TurPersona effectivePersona,
-            String lastUserMessage,
-            String baseSystemPrompt,
-            List<MultipartFile> files,
+    public List<Message> assemble(TurChatPromptRequest request, List<MultipartFile> files,
             String selectedSkillId) {
+        TurAIAgent agent = request.agent();
+        List<ChatMessageItem> history = request.history();
+        String conversationId = request.conversationId();
+        String lastUserMessage = request.lastUserMessage();
         long t0 = System.currentTimeMillis();
-        // Append the per-agent MCP server instructions (enabled servers with
-        // non-blank llmInstructions) so the model knows how/when to use the
-        // tools those servers expose. No-op when the agent has no MCP servers
-        // or none carry instructions.
-        String mcpAugmented = baseSystemPrompt
-                + mcpInstructionsProvider.buildSystemPromptBlock(agent.getMcpServers());
-        // Rich-content rendering opt-in: when the operator enabled it on this
-        // agent, teach the model the ```html / ```d2 conventions the chat client
-        // renders natively. Default-off agents are byte-for-byte unchanged.
-        if (agent.isRichContentEnabled() && !renderPrompt.isBlank()) {
-            mcpAugmented = mcpAugmented + "\n\n" + renderPrompt;
-        }
-        // T323 / §IX.4.d — skill delegation. When the operator enabled skills on
-        // this agent AND the delegation layer is available (object storage +
-        // Code Interpreter DOCKER + a Default LLM), append the cheap
-        // progressive-disclosure block (each enabled skill's name + description)
-        // and the instruction to call `run_skill`. The skill itself runs on the
-        // Global Settings Default LLM (TurSkillRunnerService), never on this
-        // agent's model. No-op (empty block) for default-off agents or when the
-        // layer is unavailable, so existing agents are byte-for-byte unchanged.
-        if (agent.isSkillsEnabled() && skillRunnerService.isAvailable()) {
-            // T325 — honour an optional skill-mode pin (single skill) over the
-            // full enabled set; offeredSkills(null) returns all (legacy).
-            mcpAugmented = mcpAugmented
-                    + skillRunnerService.buildSystemPromptBlock(
-                            skillRunnerService.offeredSkills(selectedSkillId));
-        }
-        String flowAugmented = flowContext == null
-                ? mcpAugmented
-                : mcpAugmented + chatFlowEngineService.buildSystemPromptAddendum(
-                        flowContext.flow(), flowContext.state(), flowContext.graph());
-        // Fuse the persona on top of everything: its instruction + style
-        // guidelines + vocabulary constraints + brand-context hint +
-        // few-shot examples wrap the (already RAG-augmented) base prompt.
-        // No-op when effectivePersona is null.
-        String resolvedSystemPrompt = personaPromptComposer.compose(
-                effectivePersona,
-                agent.getTurEmbeddingModelInstance(),
-                lastUserMessage,
-                flowAugmented);
+        String resolvedSystemPrompt = buildSystemPrompt(request, selectedSkillId);
         long elapsed = System.currentTimeMillis() - t0;
         chatPipelineObservation.recordMillis(TurMeterNames.STAGE_CHAT_SETUP_COMPOSE, elapsed);
 
-        // T30 / §IV.4 — conversation-relevance retrieval. When the agent has
-        // opted in AND the persisted store has more turns than the recent-N
-        // FIFO window covers, prepend the BM25-top-K older turns (each
-        // tagged with a position/timestamp marker) so the LLM keeps context
-        // from earlier in a long conversation. No-op when disabled or when
-        // the store has nothing older than the recent window.
-        List<ChatMessageItem> effectiveHistory = chatMemoryRelevanceRetriever.enrich(
-                agent, conversationId, lastUserMessage, history);
-
-        // T115 / §IX.3.e — workspace-backed memory compression. When the agent
-        // has opted in AND the older pool (turns past the recent-N window)
-        // exceeds the configured token threshold, prepend a single compact
-        // summary of those older turns ahead of the T30-retrieved turns and
-        // the recent window. The summary LLM call is throttled to once per
-        // configured interval per conversation (cached in the service). No-op
-        // when disabled or the pool is small.
-        java.util.Optional<ChatMessageItem> summary =
-                chatMemoryCompressionService.summaryBlock(agent, conversationId);
-        if (summary.isPresent()) {
-            List<ChatMessageItem> withSummary = new ArrayList<>(effectiveHistory.size() + 1);
-            withSummary.add(summary.get());
-            withSummary.addAll(effectiveHistory);
-            effectiveHistory = withSummary;
+        // T616 / §XXXV.3 — build the history-prefix (T115 memory summary + T30
+        // relevance-retrieved older turns) through the message contributor pipeline,
+        // then prepend it to the client history. The whole message list now has one
+        // assembly path. Prefix ordering is [summary] + [retrieved], identical to
+        // the legacy inline layering the escape hatch restores.
+        List<ChatMessageItem> memoryPrefix = buildMemoryPrefix(agent, conversationId, lastUserMessage);
+        List<ChatMessageItem> effectiveHistory;
+        if (memoryPrefix.isEmpty()) {
+            effectiveHistory = history;
+        } else {
+            effectiveHistory = new ArrayList<>(memoryPrefix.size() + history.size());
+            effectiveHistory.addAll(memoryPrefix);
+            effectiveHistory.addAll(history);
         }
 
         List<Message> messages = new ArrayList<>();

@@ -82,6 +82,11 @@ import lombok.extern.slf4j.Slf4j;
 @ComponentScan("com.viglet.turing")
 @RequiredArgsConstructor
 public class TurSNSiteAPI {
+
+    // --- S1192: extracted duplicated literals ---
+    private static final String ERROR = "error";
+    private static final String TASK_ID = "taskId";
+
     private final TurSNSiteRepository turSNSiteRepository;
     private final TurSNSiteLocaleRepository turSNSiteLocaleRepository;
     private final TurSNSiteGenAiRepository turSNSiteGenAiRepository;
@@ -124,7 +129,7 @@ public class TurSNSiteAPI {
     @Transactional(readOnly = true)
     @Secured({"ROLE_ADMIN", "SN_VIEW"})
     public TurSNSiteDto turSNSiteGet(@PathVariable String id) {
-        return turSNSiteMapper.toDto(this.turSNSiteRepository.findByIdNoCache(id).orElse(new TurSNSite()));
+        return turSNSiteMapper.toDto(this.turSNSiteRepository.findByIdWithGenAi(id).orElse(new TurSNSite()));
     }
 
     @Operation(summary = "Update a Semantic Navigation Site")
@@ -136,10 +141,10 @@ public class TurSNSiteAPI {
                 .filter(site -> !site.getId().equals(id));
         if (duplicate.isPresent()) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
-                    .body(Map.of("error", "A site with this name already exists."));
+                    .body(Map.of(ERROR, "A site with this name already exists."));
         }
         TurSNSite turSNSite = turSNSiteMapper.toEntity(turSNSiteDto);
-        return ResponseEntity.ok(this.turSNSiteRepository.findByIdNoCache(id).map(turSNSiteEdit -> {
+        return ResponseEntity.ok(this.turSNSiteRepository.findByIdWithGenAi(id).map(turSNSiteEdit -> {
             turSNSiteEdit.setName(turSNSite.getName());
             turSNSiteEdit.setDescription(turSNSite.getDescription());
             turSNSiteEdit.setIcon(turSNSite.getIcon());
@@ -202,6 +207,28 @@ public class TurSNSiteAPI {
                                         ? turSEInstanceRepository.findById(se.getId()).orElse(null)
                                         : null)
                                 .orElse(null));
+                // T383 / §XX.3 — public SN search ranking mode (LEGACY default,
+                // HYBRID_RRF opts into BM25 + vector RRF fusion). Distinct from
+                // the RAG flags above.
+                turSNSiteGenAi.setSnRankingMode(
+                        Optional.ofNullable(genAi.getSnRankingMode())
+                                .orElse(com.viglet.turing.persistence.model.sn.genai.TurSNRankingMode.LEGACY));
+                // T790 / §LIV.1 (Block BF) — knowledge-base mode (VECTOR default,
+                // VECTORLESS_STRUCTURED = the copilot path needing only a default LLM,
+                // HYBRID = both). Names the retrieval strategy so it is discoverable.
+                turSNSiteGenAi.setKnowledgeBaseMode(
+                        Optional.ofNullable(genAi.getKnowledgeBaseMode())
+                                .orElse(com.viglet.turing.persistence.model.sn.genai.TurSNKnowledgeBaseMode.VECTOR));
+                // T472 / §XXVI.9 — index-time content-fit signal (opt-in). The
+                // master switch + target-audience persona id drive the
+                // deterministic readability scorer at index time.
+                turSNSiteGenAi.setContentFitIndexingEnabled(genAi.isContentFitIndexingEnabled());
+                turSNSiteGenAi.setContentFitPersonaId(genAi.getContentFitPersonaId());
+                // T501 / §X.19 — index-time native video/audio understanding (opt-in,
+                // Gemini-only). Appends the clip transcript/scenes to the document text
+                // field so the media's content becomes searchable.
+                turSNSiteGenAi.setMediaUnderstandingIndexingEnabled(
+                        genAi.isMediaUnderstandingIndexingEnabled());
                 turSNSiteGenAiRepository.save(turSNSiteGenAi);
                 turSNSiteEdit.setTurSNSiteGenAi(turSNSiteGenAi);
             });
@@ -217,7 +244,7 @@ public class TurSNSiteAPI {
     @DeleteMapping("/{id}")
     @Secured({"ROLE_ADMIN", "SN_DELETE"})
     public boolean turSNSiteDelete(@PathVariable String id) {
-        Optional<TurSNSite> turSNSite = turSNSiteRepository.findByIdNoCache(id);
+        Optional<TurSNSite> turSNSite = turSNSiteRepository.findById(id);
         turSNSite.ifPresent(site -> {
             TurSNSiteGenAi genAi = site.getTurSNSiteGenAi();
             site.getTurSNSiteFields().clear();
@@ -252,7 +279,7 @@ public class TurSNSiteAPI {
     public ResponseEntity<Object> turSNSiteAdd(@RequestBody TurSNSiteDto turSNSiteDto, Principal principal) {
         if (turSNSiteRepository.findByNameIgnoreCase(turSNSiteDto.getName()).isPresent()) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
-                    .body(Map.of("error", "A site with this name already exists."));
+                    .body(Map.of(ERROR, "A site with this name already exists."));
         }
         TurSNSite turSNSite = turSNSiteMapper.toEntity(turSNSiteDto);
         if (turSNSite.getTurSNSiteGenAi() != null) {
@@ -305,7 +332,7 @@ public class TurSNSiteAPI {
                 log.error("Async export failed for site {}: {}", id, e.getMessage(), e);
             }
         });
-        return Map.of("taskId", effectiveTaskId);
+        return Map.of(TASK_ID, effectiveTaskId);
     }
 
     @GetMapping(value = "/export/download/{taskId}", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
@@ -314,15 +341,6 @@ public class TurSNSiteAPI {
         return turSNSiteExport.downloadAsyncExport(taskId, response);
     }
 
-    /**
-     * Re-feeds every document already indexed in the search engine into the
-     * RAG vector store (async, virtual thread). Returns the {@code taskId}
-     * the client polls via {@code GET /api/sn/export/progress/{taskId}} —
-     * progress reuses the export channel because the
-     * {@link TurSNSiteContentExchangeService} progress map is shared.
-     *
-     * @since 2026.2.4
-     */
     /**
      * Returns the in-flight reindex task id (and progress snapshot) for this
      * site so the admin UI can resume the progress display after navigating
@@ -336,7 +354,7 @@ public class TurSNSiteAPI {
         return contentExchangeService.findActiveReindexTask(id)
                 .flatMap(taskId -> contentExchangeService.getProgress(taskId)
                         .map(p -> ResponseEntity.ok(Map.of(
-                                "taskId", (Object) taskId,
+                                TASK_ID, (Object) taskId,
                                 "totalDocuments", p.totalDocuments(),
                                 "processedDocuments", p.processedDocuments(),
                                 "percentage", p.percentage(),
@@ -357,7 +375,7 @@ public class TurSNSiteAPI {
                     var agent = genAi == null ? null : genAi.getTurAIAgent();
                     if (agent == null || agent.getEnabled() != 1 || !agent.isRagEnabled()) {
                         return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                                .<Map<String, String>>body(Map.of("error", "RAG is not enabled on this site"));
+                                .<Map<String, String>>body(Map.of(ERROR, "RAG is not enabled on this site"));
                     }
                     String effectiveTaskId = taskId != null
                             ? taskId
@@ -370,7 +388,7 @@ public class TurSNSiteAPI {
                             log.error("Async RAG reindex failed for site {}: {}", siteId, e.getMessage(), e);
                         }
                     });
-                    return ResponseEntity.ok(Map.of("taskId", effectiveTaskId));
+                    return ResponseEntity.ok(Map.of(TASK_ID, effectiveTaskId));
                 })
                 .orElse(ResponseEntity.notFound().build());
     }
@@ -379,39 +397,41 @@ public class TurSNSiteAPI {
     @Secured({"ROLE_ADMIN", "SN_VIEW"})
     public SseEmitter exportProgress(@PathVariable String taskId) {
         SseEmitter emitter = new SseEmitter(600_000L);
-        Thread.ofVirtual().start(() -> {
-            try {
-                boolean completed = false;
-                while (!completed) {
-                    var progress = contentExchangeService.getProgress(taskId);
-                    if (progress.isPresent()) {
-                        var p = progress.get();
-                        emitter.send(SseEmitter.event()
-                                .name("progress")
-                                .data(Map.of(
-                                        "totalDocuments", p.totalDocuments(),
-                                        "processedDocuments", p.processedDocuments(),
-                                        "percentage", p.percentage(),
-                                        "currentLocale", p.currentLocale(),
-                                        "phase", p.phase(),
-                                        "estimatedRemainingMillis", p.estimatedRemainingMillis(),
-                                        "parallelism", contentExchangeService.getParallelism(taskId)
-                                )));
-                        if ("completed".equals(p.phase())) {
-                            completed = true;
-                            contentExchangeService.removeProgress(taskId);
-                        }
-                    }
-                    if (!completed) {
-                        Thread.sleep(500);
+        Thread.ofVirtual().start(() -> streamExportProgress(taskId, emitter));
+        return emitter;
+    }
+
+    private void streamExportProgress(String taskId, SseEmitter emitter) {
+        try {
+            while (true) {
+                var progress = contentExchangeService.getProgress(taskId);
+                if (progress.isPresent()) {
+                    var p = progress.get();
+                    emitter.send(SseEmitter.event()
+                            .name("progress")
+                            .data(Map.of(
+                                    "totalDocuments", p.totalDocuments(),
+                                    "processedDocuments", p.processedDocuments(),
+                                    "percentage", p.percentage(),
+                                    "currentLocale", p.currentLocale(),
+                                    "phase", p.phase(),
+                                    "estimatedRemainingMillis", p.estimatedRemainingMillis(),
+                                    "parallelism", contentExchangeService.getParallelism(taskId)
+                            )));
+                    if ("completed".equals(p.phase())) {
+                        contentExchangeService.removeProgress(taskId);
+                        break;
                     }
                 }
-                emitter.complete();
-            } catch (Exception e) {
-                emitter.completeWithError(e);
+                Thread.sleep(500);
             }
-        });
-        return emitter;
+            emitter.complete();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            emitter.completeWithError(e);
+        } catch (Exception e) {
+            emitter.completeWithError(e);
+        }
     }
 
     @Operation(summary = "Semantic Navigation Site Monitoring Status")

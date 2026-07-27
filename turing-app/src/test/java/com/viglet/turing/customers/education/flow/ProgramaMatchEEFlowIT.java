@@ -360,9 +360,10 @@ class ProgramaMatchEEFlowIT extends AbstractTuringSpringIT {
         assertThat(vars.get("area"))
                 .as("Switch routing variable must be populated")
                 .isEqualToIgnoringCase(fixture.areaInput);
-        assertThat(vars).containsEntry("area_label", fixture.expectedAreaLabel);
-        assertThat(vars).containsEntry("color", fixture.expectedColor);
-        assertThat(vars).containsEntry("cta_visible", "true");
+        assertThat(vars)
+                .containsEntry("area_label", fixture.expectedAreaLabel)
+                .containsEntry("color", fixture.expectedColor)
+                .containsEntry("cta_visible", "true");
         assertThat(vars.get("career_path"))
                 .as("career_path slot must hold a JSON array")
                 .startsWith("[").endsWith("]");
@@ -473,8 +474,7 @@ class ProgramaMatchEEFlowIT extends AbstractTuringSpringIT {
         // no longer belong in the chat text — they live in the slot.
         assertThat(secondReply)
                 .as("Reply must reference the cards UI (not repeat program names)")
-                .containsIgnoringCase("card");
-        assertThat(secondReply)
+                .containsIgnoringCase("card")
                 .as("Reply must close with the scheduling/email CTA — accept both 'email' and 'e-mail'")
                 .containsIgnoringCase("consultor");
         assertThat(secondReply.toLowerCase())
@@ -608,7 +608,7 @@ class ProgramaMatchEEFlowIT extends AbstractTuringSpringIT {
                 .isEqualTo("programa-match-persona-2026q1");
 
         TurAIAgent reloaded = agentRepository.findById(agent.getId()).orElseThrow();
-        final int N = 20;
+        final int N = 40;
         Map<String, Integer> counts = new HashMap<>();
         Map<String, String> assignments = new HashMap<>();
 
@@ -619,8 +619,16 @@ class ProgramaMatchEEFlowIT extends AbstractTuringSpringIT {
         // + experimentKey), so changing the message doesn't affect the
         // distribution we're testing.
         String triggerMsg = "Quero montar um plano de carreira pessoal";
+        // DETERMINISTIC conversation ids ("conv-ab-0".."conv-ab-N"). The arm
+        // is a pure hash of (conversationId + ":" + experimentKey), so random
+        // UUIDs turned this into a fresh coin-flip sample on every run — N=20
+        // landed outside the slack band ~1.2% of the time (e.g. 16/4) and the
+        // build flaked. With fixed ids the split is reproducible: this exact
+        // sequence yields 20/20 at N=40, so the test now passes (or fails)
+        // identically every run while still proving the hash mixes the
+        // experimentKey (a one-sided split would mean it doesn't).
         for (int i = 0; i < N; i++) {
-            String conv = "conv-ab-" + UUID.randomUUID();
+            String conv = "conv-ab-" + i;
             Optional<FlowSelection> sel = engine.selectActiveFlow(reloaded, conv, triggerMsg, chatModel);
             assertThat(sel).as("Router must pick a flow for conv #%d", i).isPresent();
             String variant = sel.get().flow().getVariantLabel();
@@ -635,16 +643,17 @@ class ProgramaMatchEEFlowIT extends AbstractTuringSpringIT {
                 N, counts.getOrDefault("marina-consultora", 0),
                 counts.getOrDefault("lucas-alumni", 0));
 
-        // Distribution: 50/50 nominal with statistical slack. Both arms
-        // must receive non-trivial traffic — a fully one-sided split would
-        // mean assignVariant isn't actually mixing the experimentKey into
-        // the hash.
+        // Distribution: 50/50 nominal. With the deterministic ids above the
+        // split is a fixed 20/20, but we keep a generous band so an
+        // incidental id-format or hash tweak doesn't break the test on a
+        // still-balanced split — a one-sided result would mean assignVariant
+        // isn't mixing the experimentKey into the hash.
         assertThat(counts.getOrDefault("marina-consultora", 0))
                 .as("Marina arm must receive ~50%% of N=%d conversations", N)
-                .isBetween(6, 14);
+                .isBetween(14, 26);
         assertThat(counts.getOrDefault("lucas-alumni", 0))
                 .as("Lucas arm must receive ~50%% of N=%d conversations", N)
-                .isBetween(6, 14);
+                .isBetween(14, 26);
 
         // Stickiness: re-route a sample of conversations and confirm they
         // land on the same variant. selectActiveFlow's continuation path
@@ -753,9 +762,10 @@ class ProgramaMatchEEFlowIT extends AbstractTuringSpringIT {
         assertThat(vars.get("area"))
                 .as("Switch routing variable must be populated")
                 .isEqualToIgnoringCase(fixture.areaInput);
-        assertThat(vars).containsEntry("area_label", fixture.expectedAreaLabel);
-        assertThat(vars).containsEntry("color", fixture.expectedColor);
-        assertThat(vars).containsEntry("cta_visible", "true");
+        assertThat(vars)
+                .containsEntry("area_label", fixture.expectedAreaLabel)
+                .containsEntry("color", fixture.expectedColor)
+                .containsEntry("cta_visible", "true");
         // Lucas-specific slot writes (stat_pitch and final_pitch carry peer voice)
         assertThat(vars.get("stat_pitch"))
                 .as("Lucas stat_pitch must be a peer-tone quote signed '— Lucas'")

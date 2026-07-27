@@ -19,7 +19,7 @@ import java.util.Optional;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.ChatOptions;
-import org.springframework.ai.model.tool.DefaultToolCallingChatOptions;
+import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -30,6 +30,7 @@ import com.viglet.turing.genai.flow.ChatFlowGraph;
 import com.viglet.turing.genai.flow.ChatFlowNode;
 import com.viglet.turing.genai.flow.TurChatFlowEngineService;
 import com.viglet.turing.genai.persona.TurAgentPersonaResolver;
+import com.viglet.turing.genai.persona.TurPersonaModelCalibration;
 import com.viglet.turing.observability.TurChatPipelineObservation;
 import com.viglet.turing.observability.TurMeterNames;
 import com.viglet.turing.persistence.model.agent.TurAIAgent;
@@ -41,6 +42,8 @@ import com.viglet.turing.persistence.repository.agent.TurChatFlowRepository;
 import com.viglet.turing.resilience.llm.TurLlmModelFactory;
 import com.viglet.turing.service.chatanalytics.TurChatAnalyticsService;
 import com.viglet.turing.service.chatanalytics.TurChatCohortResolver;
+import com.viglet.turing.service.chatanalytics.TurChatSessionRefs;
+import com.viglet.turing.service.chatanalytics.TurChatVisitorContext;
 import com.viglet.turing.system.security.TurSecretCryptoService;
 
 import lombok.extern.slf4j.Slf4j;
@@ -101,12 +104,17 @@ public class TurAgentChatExecutor {
     private final TurChatPromptAssembler promptAssembler;
     private final TurChatStreamingDispatcher streamingDispatcher;
     private final TurTokenBudgetService tokenBudgetService;
+    private final TurPromptCompactor promptCompactor;
     private final TurChatFlowRepository chatFlowRepository;
     private final TurChatFlowEngineService chatFlowEngineService;
+    private final com.viglet.turing.genai.flow.TurConversationLock conversationLock;
     private final TurAgentPersonaResolver personaResolver;
     private final TurChatAnalyticsService chatAnalyticsService;
     private final TurChatCohortResolver chatCohortResolver;
     private final TurChatPipelineObservation chatPipelineObservation;
+    private final com.viglet.turing.service.llm.budget.TurChatCostBudgetGate costBudgetGate;
+    private final com.viglet.turing.resilience.llm.TurMetaChatModelResolver metaChatModelResolver;
+    private final com.viglet.turing.properties.TurAbuseControlProperty abuseControlProperty;
 
     public TurAgentChatExecutor(TurLlmModelFactory llmModelFactory,
             TurSecretCryptoService turSecretCryptoService,
@@ -114,24 +122,34 @@ public class TurAgentChatExecutor {
             TurChatPromptAssembler promptAssembler,
             TurChatStreamingDispatcher streamingDispatcher,
             TurTokenBudgetService tokenBudgetService,
+            TurPromptCompactor promptCompactor,
             TurChatFlowRepository chatFlowRepository,
             TurChatFlowEngineService chatFlowEngineService,
+            com.viglet.turing.genai.flow.TurConversationLock conversationLock,
             TurAgentPersonaResolver personaResolver,
             TurChatAnalyticsService chatAnalyticsService,
             TurChatCohortResolver chatCohortResolver,
-            TurChatPipelineObservation chatPipelineObservation) {
+            TurChatPipelineObservation chatPipelineObservation,
+            com.viglet.turing.service.llm.budget.TurChatCostBudgetGate costBudgetGate,
+            com.viglet.turing.resilience.llm.TurMetaChatModelResolver metaChatModelResolver,
+            com.viglet.turing.properties.TurAbuseControlProperty abuseControlProperty) {
         this.llmModelFactory = llmModelFactory;
         this.turSecretCryptoService = turSecretCryptoService;
         this.toolResolver = toolResolver;
         this.promptAssembler = promptAssembler;
         this.streamingDispatcher = streamingDispatcher;
         this.tokenBudgetService = tokenBudgetService;
+        this.promptCompactor = promptCompactor;
         this.chatFlowRepository = chatFlowRepository;
         this.chatFlowEngineService = chatFlowEngineService;
+        this.conversationLock = conversationLock;
         this.personaResolver = personaResolver;
         this.chatAnalyticsService = chatAnalyticsService;
         this.chatCohortResolver = chatCohortResolver;
         this.chatPipelineObservation = chatPipelineObservation;
+        this.costBudgetGate = costBudgetGate;
+        this.metaChatModelResolver = metaChatModelResolver;
+        this.abuseControlProperty = abuseControlProperty;
     }
 
     public record ChatMessageItem(String role, String content) {
@@ -196,64 +214,23 @@ public class TurAgentChatExecutor {
     }
 
     /**
-     * Run an agent-driven chat without a chat flow attached. Convenience
-     * wrapper kept for the SN site AI Mode (RAG) flow that doesn't use the
-     * Phase B engine.
-     */
-    public Flux<ChatResponse> execute(TurAIAgent agent,
-            TurLLMInstance llmInstance,
-            List<ChatMessageItem> history,
-            String systemPromptOverride) {
-        return execute(agent, llmInstance, history, systemPromptOverride, null, null);
-    }
-
-    /**
-     * Run an agent-driven chat. The {@code systemPromptOverride}, when
-     * provided, replaces the agent's own {@code TurAIAgent.getSystemPrompt()}.
-     * Use this from RAG flows that need to embed retrieved chunks in the
-     * system message.
+     * Run an agent-driven chat. The {@code request} bundles the agent, LLM,
+     * history, optional {@code systemPromptOverride} (RAG flows replace the
+     * agent's own prompt to embed retrieved chunks) and the optional
+     * conversation/flow ids + visitor attachments — see
+     * {@link TurAgentChatRequest}.
      *
-     * <p>When both {@code conversationId} and {@code flowId} are non-blank
-     * and the flow is reachable, the runtime engine augments the system
-     * prompt with the current node's contract and advances the persisted
-     * state BEFORE the LLM call (§I.5 step 1 / T9 — inverted harness).
+     * <p>When both {@code conversationId} and {@code flowId} are non-blank and
+     * the flow is reachable, the runtime engine augments the system prompt with
+     * the current node's contract and advances the persisted state BEFORE the
+     * LLM call (§I.5 step 1 / T9 — inverted harness).
      *
      * @return a single-emission {@link Flux} carrying the assistant response
      *         (matches Spring AI's call-not-stream model so tool calling is
      *         resolved end-to-end before the response is emitted).
      */
-    public Flux<ChatResponse> execute(TurAIAgent agent,
-            TurLLMInstance llmInstance,
-            List<ChatMessageItem> history,
-            String systemPromptOverride,
-            String conversationId,
-            String flowId) {
-        return execute(agent, llmInstance, history, systemPromptOverride,
-                conversationId, flowId, null);
-    }
-
-    /**
-     * Overload accepting visitor-uploaded attachments. The latest user
-     * message in {@code history} gets enriched with the attachments' image
-     * {@link org.springframework.ai.content.Media} blocks (vision-capable
-     * models can read them directly) plus Tika-extracted text for documents,
-     * via the shared {@link TurChatAttachmentService} that the plain-LLM
-     * chat endpoint already uses. All other behaviour matches the no-files
-     * overload.
-     *
-     * @param files attachments uploaded with the current turn; null/empty
-     *              behaves identically to the no-files overload
-     * @since 2026.3.1
-     */
-    public Flux<ChatResponse> execute(TurAIAgent agent,
-            TurLLMInstance llmInstance,
-            List<ChatMessageItem> history,
-            String systemPromptOverride,
-            String conversationId,
-            String flowId,
-            List<MultipartFile> files) {
-        return execute(agent, llmInstance, history, systemPromptOverride,
-                conversationId, flowId, files, 0);
+    public Flux<ChatResponse> execute(TurAgentChatRequest request) {
+        return execute(request, 0);
     }
 
     /**
@@ -265,16 +242,8 @@ public class TurAgentChatExecutor {
      *
      * @since 2026.3.1
      */
-    public Flux<ChatResponse> execute(TurAIAgent agent,
-            TurLLMInstance llmInstance,
-            List<ChatMessageItem> history,
-            String systemPromptOverride,
-            String conversationId,
-            String flowId,
-            List<MultipartFile> files,
-            String forcedVariant) {
-        return execute(agent, llmInstance, history, systemPromptOverride,
-                conversationId, flowId, files, 0, forcedVariant);
+    public Flux<ChatResponse> execute(TurAgentChatRequest request, String forcedVariant) {
+        return execute(request, 0, forcedVariant);
     }
 
     /**
@@ -287,17 +256,9 @@ public class TurAgentChatExecutor {
      *
      * @since 2026.3.1
      */
-    public Flux<ChatResponse> execute(TurAIAgent agent,
-            TurLLMInstance llmInstance,
-            List<ChatMessageItem> history,
-            String systemPromptOverride,
-            String conversationId,
-            String flowId,
-            List<MultipartFile> files,
-            String forcedVariant,
+    public Flux<ChatResponse> execute(TurAgentChatRequest request, String forcedVariant,
             String selectedSkillId) {
-        return execute(agent, llmInstance, history, systemPromptOverride,
-                conversationId, flowId, files, 0, forcedVariant, selectedSkillId);
+        return execute(request, 0, forcedVariant, selectedSkillId);
     }
 
     /**
@@ -312,16 +273,8 @@ public class TurAgentChatExecutor {
      *                         increments by 1 against the parent context).
      * @since 2026.3.1
      */
-    public Flux<ChatResponse> execute(TurAIAgent agent,
-            TurLLMInstance llmInstance,
-            List<ChatMessageItem> history,
-            String systemPromptOverride,
-            String conversationId,
-            String flowId,
-            List<MultipartFile> files,
-            int agentInvokeDepth) {
-        return execute(agent, llmInstance, history, systemPromptOverride,
-                conversationId, flowId, files, agentInvokeDepth, null);
+    public Flux<ChatResponse> execute(TurAgentChatRequest request, int agentInvokeDepth) {
+        return execute(request, agentInvokeDepth, null);
     }
 
     /**
@@ -336,17 +289,9 @@ public class TurAgentChatExecutor {
      *                      sticky assignment.
      * @since 2026.3.1
      */
-    public Flux<ChatResponse> execute(TurAIAgent agent,
-            TurLLMInstance llmInstance,
-            List<ChatMessageItem> history,
-            String systemPromptOverride,
-            String conversationId,
-            String flowId,
-            List<MultipartFile> files,
-            int agentInvokeDepth,
+    public Flux<ChatResponse> execute(TurAgentChatRequest request, int agentInvokeDepth,
             String forcedVariant) {
-        return execute(agent, llmInstance, history, systemPromptOverride, conversationId,
-                flowId, files, agentInvokeDepth, forcedVariant, null);
+        return execute(request, agentInvokeDepth, forcedVariant, null);
     }
 
     /**
@@ -361,16 +306,15 @@ public class TurAgentChatExecutor {
      *                        enabled skills (legacy progressive disclosure)
      * @since 2026.3.1
      */
-    public Flux<ChatResponse> execute(TurAIAgent agent,
-            TurLLMInstance llmInstance,
-            List<ChatMessageItem> history,
-            String systemPromptOverride,
-            String conversationId,
-            String flowId,
-            List<MultipartFile> files,
-            int agentInvokeDepth,
-            String forcedVariant,
-            String selectedSkillId) {
+    public Flux<ChatResponse> execute(TurAgentChatRequest request, int agentInvokeDepth,
+            String forcedVariant, String selectedSkillId) {
+        TurAIAgent agent = request.agent();
+        TurLLMInstance llmInstance = request.llmInstance();
+        List<ChatMessageItem> history = request.history();
+        String systemPromptOverride = request.systemPromptOverride();
+        String conversationId = request.conversationId();
+        String flowId = request.flowId();
+        List<MultipartFile> files = request.files();
 
         // Per-turn timing markers. Logged as "[AgentExec][timing] ..." so a
         // single grep across the log surfaces a chat-turn latency breakdown
@@ -379,10 +323,22 @@ public class TurAgentChatExecutor {
         // here; TOOLS/COMPOSE are recorded inside the collaborators.
         final long tStart = System.currentTimeMillis();
 
+        // T291 / §XVI.3 (Block L) — turn-time soft budget gate. When the agent's
+        // month-to-date spend has reached its monthlyBudgetUsd cap and a cheaper
+        // downgrade LLM is configured, swap to it BEFORE decrypt/createChatModel
+        // so the cheaper provider's key + client are the ones built. Soft: never
+        // aborts the turn; warn-only when no downgrade is set. No-op (returns the
+        // same instance) when the gate is disabled — the common case.
+        llmInstance = costBudgetGate.resolveInstance(agent, llmInstance);
+
         String decryptedApiKey = turSecretCryptoService.decrypt(llmInstance.getApiKeyEncrypted());
         final long tAfterDecrypt = System.currentTimeMillis();
 
-        ChatModel chatModel = llmModelFactory.createChatModel(llmInstance, decryptedApiKey);
+        // T518 — wrap the (budget-resolved) primary in the cost-aware
+        // cross-provider fallback chain when one is configured; a no-op pass-
+        // through when the chain is empty (legacy single-model path).
+        ChatModel chatModel = metaChatModelResolver.wrapWithFallback(llmInstance,
+                llmModelFactory.createChatModel(llmInstance, decryptedApiKey));
         final long tAfterChatModel = System.currentTimeMillis();
 
         // Note (§I.5 step 2 / T10): persona, tool callbacks, and chat
@@ -395,28 +351,46 @@ public class TurAgentChatExecutor {
         // to ONE.
         String baseSystemPrompt = resolveSystemPrompt(agent, systemPromptOverride);
         String lastUserMessageEarly = lastMessageOfRole(history, "user");
-        TurAgentChatFlowContext initialFlowContext = resolveFlowContext(agent, conversationId,
-                flowId, lastUserMessageEarly, chatModel, forcedVariant);
-        // §I.5 step 1 inversion: when a flow is governing this turn (and the
-        // turn is NOT the freshly-triggered activation turn — that one needs
-        // the legacy skip path because the user msg is the trigger, not data
-        // the strategy can force-capture as the first slot value), run
-        // advance(...) NOW — before the LLM call — passing
-        // assistantMessage=null. The strategy decides the cursor purely from
-        // the user message; the LLM then composes ONE reply with the
-        // post-advance node already baked into the system prompt. No regen,
-        // no anchoring patches.
-        final boolean runEarlyAdvance = initialFlowContext != null
-                && !initialFlowContext.freshlyTriggered();
-        final TurAgentChatFlowContext flowContext = runEarlyAdvance
-                ? earlyAdvanceBeforeLlm(initialFlowContext, lastUserMessageEarly, chatModel)
-                : initialFlowContext;
+        // Flow detection + pre-LLM advance run as ONE per-conversation critical
+        // section so a concurrent side-channel write on the same conversation
+        // (POST /chat/slots, /form-submit, /flow-select, /chat/resume) cannot
+        // interleave and lost-update the cursor. Without this, an optimistic
+        // slot write firing alongside the chat send could revert the advance
+        // and drop the visitor's answer (the turn then fell through to RAG).
+        // The lock is released here — BEFORE the LLM call — so the long-running
+        // model stream is never serialized; only the fast state mutation is.
+        // §I.5 step 1 inversion: when a flow governs this turn (and it is NOT
+        // the freshly-triggered activation turn — that one needs the legacy
+        // skip path because the user msg is the trigger, not data the strategy
+        // can force-capture as the first slot value), run advance(...) NOW —
+        // before the LLM call — passing assistantMessage=null. The strategy
+        // decides the cursor purely from the user message; the LLM then
+        // composes ONE reply with the post-advance node already baked into the
+        // system prompt. No regen, no anchoring patches.
+        final TurAgentChatFlowContext flowContext = conversationLock.runExclusive(conversationId, () -> {
+            TurAgentChatFlowContext initial = resolveFlowContext(agent, conversationId,
+                    flowId, lastUserMessageEarly, chatModel, forcedVariant);
+            boolean runEarly = initial != null && !initial.freshlyTriggered();
+            // Diagnostic: shows whether a governing flow was resolved for this
+            // turn under the per-conversation lock. A turn that lands on plain
+            // RAG despite an in-progress flow shows flowResolved=false.
+            log.debug("[ConvLock] flow turn conv='{}' flowResolved={} freshlyTriggered={} userMsg='{}'",
+                    conversationId, initial != null && initial.flow() != null,
+                    initial != null && initial.freshlyTriggered(), lastUserMessageEarly);
+            return runEarly
+                    ? earlyAdvanceBeforeLlm(initial, lastUserMessageEarly, chatModel)
+                    : initial;
+        });
         final long tAfterFlow = System.currentTimeMillis();
 
         // §I.5 step 2 / T10: SINGLE persona resolution per turn — runs
         // AFTER flow context resolution (and after early advance on the
         // inverted path). By the time this fires the cursor is FINAL pre-LLM.
-        final TurPersona activePersona = personaResolver.resolve(agent, conversationId);
+        // T633 — the per-request persona override (public SN demo path) is
+        // honoured here, validated against the catalog inside resolve(...); a
+        // flow-state override still wins, so flow-driven turns are unaffected.
+        final TurPersona activePersona = personaResolver.resolve(agent, conversationId,
+                request.requestPersonaId());
         final long tAfterPersona = System.currentTimeMillis();
 
         // Resolve the active node up-front so the §IV.2 / T29 tool
@@ -431,11 +405,22 @@ public class TurAgentChatExecutor {
         final long tBeforeTools = System.currentTimeMillis();
         ToolCallback[] callbacks = toolResolver.resolve(agent, activePersona,
                 lastUserMessageEarly, activeNode, selectedSkillId);
+        // T647 / §XXXVII.9 — tool trust boundary: strip ALL tool callbacks for an
+        // untrusted (anonymous public SN chat) caller when the anonymous-tools
+        // policy is off, so an anonymous visitor / injection payload can't trigger
+        // native / MCP-client / custom / skill tool execution with system authority.
+        if (request.untrustedCaller() && !abuseControlProperty.getChat().isAnonymousToolsEnabled()
+                && callbacks != null && callbacks.length > 0) {
+            log.info("[AgentExec] Stripping {} tool callback(s) for untrusted anonymous caller "
+                    + "(turing.abuse.chat.anonymous-tools-enabled=false)", callbacks.length);
+            callbacks = new ToolCallback[0];
+        }
         final long tAfterTools = System.currentTimeMillis();
 
         // Build chat options + per-turn tool context map (drives Custom
         // Tool Groovy scripts: conversationId, agentId, agentPythonReqs).
-        ChatOptions chatOptions = buildChatOptions(agent, conversationId, callbacks, agentInvokeDepth);
+        ChatOptions chatOptions = buildChatOptions(chatModel, agent, conversationId, callbacks,
+                agentInvokeDepth, activePersona);
 
         // Strip the toolset from the INITIAL LLM call when the active
         // node's declarative {@code toolsEnabled=false} forbids them
@@ -445,11 +430,11 @@ public class TurAgentChatExecutor {
         boolean activeNodeForbidsTools = TurChatToolResolver.forbidsToolCalls(activeNode);
         // Spring AI 2.0.0-RC1 removed internalToolExecutionEnabled; the empty
         // toolCallbacks list alone already guarantees the tool-free initial call
-        // (no callbacks means nothing for the model to invoke).
+        // (no callbacks means nothing for the model to invoke). The options must
+        // still be the provider's concrete type (see buildChatOptions) — Spring
+        // AI 2.0.0 (final) hard-casts prompt.getOptions() to OpenAiChatOptions.
         ChatOptions initialOptions = activeNodeForbidsTools
-                ? DefaultToolCallingChatOptions.builder()
-                        .toolCallbacks(List.<ToolCallback>of())
-                        .build()
+                ? providerToolOptions(chatModel, new ToolCallback[0], java.util.Map.of(), activePersona)
                 : chatOptions;
         if (activeNodeForbidsTools) {
             log.info("[AgentExec] Initial call on node '{}' running tool-free (aiInstruction forbids tools)",
@@ -460,18 +445,36 @@ public class TurAgentChatExecutor {
         // STAGE_CHAT_SETUP_COMPOSE internally around the personaComposer
         // call (matches the pre-T33 substage boundary).
         final long tBeforeCompose = System.currentTimeMillis();
-        List<Message> messages = promptAssembler.assemble(agent, history, conversationId,
-                flowContext, activePersona, lastUserMessageEarly, baseSystemPrompt, files,
-                selectedSkillId);
+        List<Message> messages = promptAssembler.assemble(
+                new TurChatPromptRequest(agent, history, conversationId, flowContext,
+                        activePersona, lastUserMessageEarly, baseSystemPrompt),
+                files, selectedSkillId);
         final long tAfterCompose = System.currentTimeMillis();
 
         // T123 / §IX.7 — enforceable token-budget check. Disabled when
         // agent.maxPromptTokens == 0 (the default). ERROR mode short-
         // circuits the LLM call with a single ASSISTANT_TURN error event
         // so the SSE consumer sees a structured failure rather than a
-        // dangling stream; WARN/COMPACT log + proceed.
-        TurTokenBudgetService.CheckResult budgetCheck = tokenBudgetService.check(agent, messages);
-        if (budgetCheck.decision() == TurTokenBudgetService.Decision.ERROR) {
+        // dangling stream; WARN logs + proceeds; COMPACT routes the prompt
+        // through the T115-backed compactor (summarizing the older middle
+        // turns) and proceeds best-effort even if still over budget.
+        TurTokenBudgetService.CheckResult budgetCheck =
+                tokenBudgetService.check(agent, llmInstance, messages);
+        if (budgetCheck.decision() == TurTokenBudgetService.Decision.COMPACT) {
+            TurPromptCompactor.CompactionResult compaction = promptCompactor.compact(agent, messages);
+            if (compaction.compacted()) {
+                messages = compaction.messages();
+                if (compaction.afterTokens() > budgetCheck.budget()) {
+                    log.warn("[AgentExec] agent '{}' still over budget after COMPACT (est={} max={}) — "
+                            + "proceeding best-effort", agent.getId(), compaction.afterTokens(),
+                            budgetCheck.budget());
+                }
+            } else {
+                log.warn("[AgentExec] agent '{}' COMPACT requested but nothing to compact "
+                        + "(est={} max={}) — proceeding over budget",
+                        agent.getId(), budgetCheck.estimatedTokens(), budgetCheck.budget());
+            }
+        } else if (budgetCheck.decision() == TurTokenBudgetService.Decision.ERROR) {
             log.warn("[AgentExec] Token budget exceeded for agent '{}' — estimate={} max={} — aborting",
                     agent.getId(), budgetCheck.estimatedTokens(), budgetCheck.budget());
             String errMsg = String.format(
@@ -526,9 +529,10 @@ public class TurAgentChatExecutor {
                 tAfterCompose - tBeforeCompose,
                 tSetupEnd - tAfterCompose);
 
-        return streamingDispatcher.dispatch(agent, llmInstance, decryptedApiKey, chatModel,
-                messages, initialOptions, flowContext, activePersona,
-                conversationId, lastUserMessageEarly, username, tStart, tSetupEnd);
+        return streamingDispatcher.dispatch(
+                new TurChatTurnContext(agent, llmInstance, conversationId, lastUserMessageEarly,
+                        username, tStart, tSetupEnd),
+                decryptedApiKey, chatModel, messages, initialOptions, flowContext, activePersona);
     }
 
     /**
@@ -537,8 +541,9 @@ public class TurAgentChatExecutor {
      * map (conversationId / agentId / agentPythonRequirements) consumed by
      * Custom Tool Groovy scripts.
      */
-    private static ChatOptions buildChatOptions(TurAIAgent agent, String conversationId,
-            ToolCallback[] callbacks, int agentInvokeDepth) {
+    private static ChatOptions buildChatOptions(ChatModel chatModel, TurAIAgent agent,
+            String conversationId, ToolCallback[] callbacks, int agentInvokeDepth,
+            TurPersona activePersona) {
         // Map.of() doesn't accept nulls — build with a LinkedHashMap so
         // we can skip entries cleanly when their source value is absent.
         var toolContextMap = new java.util.LinkedHashMap<String, Object>();
@@ -591,14 +596,47 @@ public class TurAgentChatExecutor {
         toolContextMap.put(
                 com.viglet.turing.genai.tool.TurCustomToolCallbackService.TOOL_CONTEXT_RAG_SOURCES,
                 new com.viglet.turing.genai.rag.TurRagSourceCollector());
+        // T427 / T436 — publish a per-turn tool-call collector. TurLoggingToolCallback
+        // records each invocation into it; the dispatcher drains it into the
+        // read-only trace store after the loop and (when toolCallEventsEnabled)
+        // streams the calls live as `tool_call` SSE events. Always present so the
+        // callback has a stable target; empty when no tool fires this turn.
+        toolContextMap.put(
+                com.viglet.turing.genai.tool.TurCustomToolCallbackService.TOOL_CONTEXT_TOOL_CALLS,
+                new com.viglet.turing.genai.tool.TurToolCallCollector());
         // internalToolExecutionEnabled was removed in Spring AI 2.0.0-RC1;
         // internal tool execution is now the default once callbacks are present.
-        var chatOptionsBuilder = DefaultToolCallingChatOptions.builder()
-                .toolCallbacks(callbacks);
-        if (!toolContextMap.isEmpty()) {
-            chatOptionsBuilder.toolContext(toolContextMap);
+        return providerToolOptions(chatModel, callbacks, toolContextMap, activePersona);
+    }
+
+    /**
+     * Builds the per-turn {@link ChatOptions} by seeding from the provider's
+     * own concrete options (see {@link TurChatToolOptions}) and attaching the
+     * tool callbacks + tool context. Must NOT hand the model a generic
+     * {@code DefaultToolCallingChatOptions} — Spring AI 2.0.0 hard-casts the
+     * prompt options to the provider type and would throw {@code ClassCastException}.
+     */
+    private static ChatOptions providerToolOptions(ChatModel chatModel,
+            ToolCallback[] callbacks, java.util.Map<String, Object> toolContext,
+            TurPersona activePersona) {
+        List<ToolCallback> callbackList = callbacks == null ? List.of() : List.of(callbacks);
+        ToolCallingChatOptions.Builder<?> builder = TurChatToolOptions.builderFrom(chatModel)
+                .toolCallbacks(callbackList);
+        if (toolContext != null && !toolContext.isEmpty()) {
+            builder.toolContext(toolContext);
         }
-        return chatOptionsBuilder.build();
+        // T605 — opt-in style→model calibration. When the active persona opts in,
+        // its verbosity/tone override the resolved sampling params for this turn;
+        // otherwise the builder keeps the instance's own temperature/maxTokens.
+        TurPersonaModelCalibration.Params calibration =
+                TurPersonaModelCalibration.forPersona(activePersona);
+        if (calibration.temperature() != null) {
+            builder.temperature(calibration.temperature());
+        }
+        if (calibration.maxTokens() != null) {
+            builder.maxTokens(calibration.maxTokens());
+        }
+        return builder.build();
     }
 
     /**
@@ -621,7 +659,7 @@ public class TurAgentChatExecutor {
             TurChatCohortResolver.Cohort cohort = chatCohortResolver == null
                     ? TurChatCohortResolver.Cohort.empty()
                     : chatCohortResolver.resolveFromCurrentRequest();
-            chatAnalyticsService.recordSessionStart(
+            TurChatSessionRefs refs = new TurChatSessionRefs(
                     conversationId,
                     agent.getId(),
                     activePersona == null ? null : activePersona.getId(),
@@ -630,11 +668,10 @@ public class TurAgentChatExecutor {
                             ? null : agent.getTurEmbeddingModelInstance().getId(),
                     agent.getTurStoreInstance() == null
                             ? null : agent.getTurStoreInstance().getId(),
-                    username,
-                    cohort.locale(),
-                    firstUserMessage,
-                    cohort.timezone(),
-                    cohort.deviceType());
+                    username);
+            chatAnalyticsService.recordSessionStart(refs,
+                    new TurChatVisitorContext(cohort.locale(), cohort.timezone(), cohort.deviceType()),
+                    firstUserMessage);
         } catch (RuntimeException e) {
             log.debug("[AgentExec] analytics start failed: {}", e.getMessage());
         }

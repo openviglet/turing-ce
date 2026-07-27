@@ -27,6 +27,7 @@ import java.util.Set;
 
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.annotation.Secured;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -37,6 +38,7 @@ import com.viglet.turing.persistence.repository.agent.TurAIAgentRepository;
 import com.viglet.turing.persistence.repository.persona.TurPersonaRepository;
 import com.viglet.turing.service.chatanalytics.TurChatAnalyticsService;
 import com.viglet.turing.service.chatanalytics.TurChatAnalyticsStore;
+import com.viglet.turing.service.chatanalytics.TurChatSessionFilter;
 import com.viglet.turing.service.chatmemory.TurChatMemoryStore;
 
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -50,14 +52,26 @@ import io.swagger.v3.oas.annotations.tags.Tag;
  * <p>Time bounds default to the last 7 days when omitted; {@code from}/{@code to}
  * accept ISO-8601 instants ({@code 2026-05-01T00:00:00Z}).
  *
+ * <p><b>Authorization (T639/T640, §XXXVII.2):</b> these reads expose session
+ * enumeration and full chat transcripts (end-user content / PII), so the whole
+ * controller requires an authenticated admin — it is no longer {@code permitAll}
+ * at the HTTP layer. Grafana's Infinity datasource must authenticate.
+ *
  * @author Alexandre Oliveira
  * @since 2026.2.7
  */
 @RestController
 @RequestMapping("/api/system/chat-analytics")
+@Secured({ "ROLE_ADMIN", "AI_AGENT_VIEW" })
 @Tag(name = "Chat Analytics",
         description = "Read API over the chat analytics store; consumed by Grafana via Infinity datasource.")
 public class TurChatAnalyticsAPI {
+
+    // --- S1192: extracted duplicated literals ---
+    private static final String AGENT_ID = "agentId";
+    private static final String PERSONA_ID = "personaId";
+    private static final String BUCKET = "bucket";
+
 
     private final TurChatAnalyticsService analyticsService;
     private final TurChatMemoryStore chatMemoryStore;
@@ -67,6 +81,7 @@ public class TurChatAnalyticsAPI {
     private final com.viglet.turing.service.chatanalytics.TurChampionChallengerService championChallengerService;
     private final com.viglet.turing.genai.flow.router.TurChatFlowRouterDecisionLog routerDecisionLog;
     private final com.viglet.turing.service.chatslots.TurChatSlotSseRegistry slotSseRegistry;
+    private final com.viglet.turing.service.chatanalytics.TurToolCallTraceService toolCallTraceService;
 
     public TurChatAnalyticsAPI(TurChatAnalyticsService analyticsService,
             TurChatMemoryStore chatMemoryStore,
@@ -75,11 +90,13 @@ public class TurChatAnalyticsAPI {
             com.viglet.turing.service.chatanalytics.TurExperimentSignificanceService significanceService,
             com.viglet.turing.service.chatanalytics.TurChampionChallengerService championChallengerService,
             com.viglet.turing.genai.flow.router.TurChatFlowRouterDecisionLog routerDecisionLog,
-            com.viglet.turing.service.chatslots.TurChatSlotSseRegistry slotSseRegistry) {
+            com.viglet.turing.service.chatslots.TurChatSlotSseRegistry slotSseRegistry,
+            com.viglet.turing.service.chatanalytics.TurToolCallTraceService toolCallTraceService) {
         this.analyticsService = analyticsService;
         this.chatMemoryStore = chatMemoryStore;
         this.agentRepository = agentRepository;
         this.personaRepository = personaRepository;
+        this.toolCallTraceService = toolCallTraceService;
         this.significanceService = significanceService;
         this.championChallengerService = championChallengerService;
         this.routerDecisionLog = routerDecisionLog;
@@ -99,8 +116,8 @@ public class TurChatAnalyticsAPI {
         Set<String> agentIds = new HashSet<>();
         Set<String> personaIds = new HashSet<>();
         for (Map<String, Object> row : rows) {
-            collectId(row, "agentId", agentIds);
-            collectId(row, "personaId", personaIds);
+            collectId(row, AGENT_ID, agentIds);
+            collectId(row, PERSONA_ID, personaIds);
         }
         Map<String, String> agentNames = new HashMap<>();
         for (String id : agentIds) {
@@ -111,8 +128,8 @@ public class TurChatAnalyticsAPI {
             personaRepository.findById(id).ifPresent(p -> personaNames.put(id, p.getName()));
         }
         for (Map<String, Object> row : rows) {
-            String agentId = stringValue(row.get("agentId"));
-            String personaId = stringValue(row.get("personaId"));
+            String agentId = stringValue(row.get(AGENT_ID));
+            String personaId = stringValue(row.get(PERSONA_ID));
             row.put("agentTitle",  agentId   == null ? null : agentNames.get(agentId));
             row.put("personaName", personaId == null ? null : personaNames.get(personaId));
         }
@@ -132,17 +149,28 @@ public class TurChatAnalyticsAPI {
      */
     private void enrichBucketLabels(List<Map<String, Object>> rows, String dimension) {
         if (rows == null || rows.isEmpty()) return;
-        boolean isAgent   = "agentId".equals(dimension);
-        boolean isPersona = "personaId".equals(dimension);
+        boolean isAgent   = AGENT_ID.equals(dimension);
+        boolean isPersona = PERSONA_ID.equals(dimension);
         if (!isAgent && !isPersona) {
-            for (Map<String, Object> row : rows) {
-                Object bucket = row.get("bucket");
-                row.put("bucketLabel", bucket == null ? "unknown" : bucket.toString());
-            }
+            applyRawBucketLabels(rows);
             return;
         }
         Set<String> ids = new HashSet<>();
-        for (Map<String, Object> row : rows) collectId(row, "bucket", ids);
+        for (Map<String, Object> row : rows) collectId(row, BUCKET, ids);
+        Map<String, String> names = resolveBucketNames(ids, isAgent);
+        applyResolvedBucketLabels(rows, names);
+    }
+
+    /** Labels each row with its raw bucket value (non agent/persona dimensions). */
+    private void applyRawBucketLabels(List<Map<String, Object>> rows) {
+        for (Map<String, Object> row : rows) {
+            Object bucket = row.get(BUCKET);
+            row.put("bucketLabel", bucket == null ? "unknown" : bucket.toString());
+        }
+    }
+
+    /** Resolves agent titles / persona names for the bucket ids. */
+    private Map<String, String> resolveBucketNames(Set<String> ids, boolean isAgent) {
         Map<String, String> names = new HashMap<>();
         if (isAgent) {
             for (String id : ids) {
@@ -153,10 +181,16 @@ public class TurChatAnalyticsAPI {
                 personaRepository.findById(id).ifPresent(p -> names.put(id, p.getName()));
             }
         }
+        return names;
+    }
+
+    /** Labels each row with the resolved name, falling back to the id (or "unknown"). */
+    private void applyResolvedBucketLabels(List<Map<String, Object>> rows, Map<String, String> names) {
         for (Map<String, Object> row : rows) {
-            String id = stringValue(row.get("bucket"));
+            String id = stringValue(row.get(BUCKET));
             String name = id == null ? null : names.get(id);
-            row.put("bucketLabel", name != null ? name : (id == null ? "unknown" : id));
+            String fallbackLabel = id == null ? "unknown" : id;
+            row.put("bucketLabel", name != null ? name : fallbackLabel);
         }
     }
 
@@ -207,8 +241,9 @@ public class TurChatAnalyticsAPI {
         Instant fromInstant = parseInstant(from, defaultFrom());
         Instant toInstant   = parseInstant(to,   defaultTo());
         List<Map<String, Object>> rows = analyticsService.getStore().findRecentSessions(
-                fromInstant, toInstant, agentId, personaId, outcome,
-                intentLabel, goalAchieved, sentiment, limit);
+                fromInstant, toInstant,
+                new TurChatSessionFilter(agentId, personaId, outcome, intentLabel, goalAchieved, sentiment),
+                limit);
         enrichWithNames(rows);
         return rows;
     }
@@ -343,7 +378,7 @@ public class TurChatAnalyticsAPI {
     public List<Map<String, Object>> scorecard(
             @RequestParam(required = false) String from,
             @RequestParam(required = false) String to,
-            @RequestParam(defaultValue = "agentId") String dimension,
+            @RequestParam(defaultValue = AGENT_ID) String dimension,
             @RequestParam(required = false) String deviceType,
             @RequestParam(required = false) String locale,
             @RequestParam(required = false) String timezone,
@@ -480,11 +515,29 @@ public class TurChatAnalyticsAPI {
         if (session == null) return ResponseEntity.notFound().build();
         enrichWithNames(session);
         List<Map<String, Object>> messages = chatMemoryStore.findMessages(conversationId,
-                Math.max(1, Math.min(limit, 1000)));
+                Math.clamp(limit, 1, 1000));
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("session", session);
         body.put("messages", messages);
         return ResponseEntity.ok(body);
+    }
+
+    /**
+     * T427 — the tools that actually executed in a conversation, in order
+     * (name, redacted arg digest, ok/err, duration). Read-only and process-local
+     * (the same in-memory store the live T436 {@code tool_call} events drain
+     * into), so a live event and this trace describe each invocation identically.
+     *
+     * <p>Backs {@code turing eval}'s {@code assert.tool_called} so the assertion
+     * is exact rather than inferred from slot-audit {@code TOOL} writes; also a
+     * per-conversation tool timeline for observability. Always 200 — an unknown
+     * or tool-free conversation simply returns an empty list.
+     */
+    @GetMapping(value = "/sessions/{conversationId}/tool-calls",
+            produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<List<com.viglet.turing.genai.tool.TurChatToolCall>> toolCalls(
+            @PathVariable String conversationId) {
+        return ResponseEntity.ok(toolCallTraceService.getTrace(conversationId));
     }
 
     private static Instant parseInstant(String value, Instant fallback) {

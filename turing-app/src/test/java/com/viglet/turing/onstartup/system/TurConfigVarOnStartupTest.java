@@ -1,7 +1,8 @@
 package com.viglet.turing.onstartup.system;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.never;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -21,137 +22,86 @@ import com.viglet.turing.persistence.repository.system.TurConfigVarRepository;
 @ExtendWith(MockitoExtension.class)
 class TurConfigVarOnStartupTest {
 
+    private static final String GLOBAL = "/system/global";
+
     @Mock
     private TurConfigVarRepository turConfigVarRepository;
 
     @InjectMocks
     private TurConfigVarOnStartup turConfigVarOnStartup;
 
-    @Test
-    void shouldCreateFirstTimeConfigVarWhenMissing() {
-        when(turConfigVarRepository.findById(org.mockito.ArgumentMatchers.anyString()))
-                .thenReturn(Optional.empty());
-
+    /** Runs the first-time bootstrap (no existing rows) and returns every saved config var. */
+    private List<TurConfigVar> savedDefaults() {
+        when(turConfigVarRepository.findById(anyString())).thenReturn(Optional.empty());
         turConfigVarOnStartup.createDefaultRows();
-
         ArgumentCaptor<TurConfigVar> captor = ArgumentCaptor.forClass(TurConfigVar.class);
-        verify(turConfigVarRepository, org.mockito.Mockito.times(31)).save(captor.capture());
+        verify(turConfigVarRepository, times(50)).save(captor.capture());
+        return captor.getAllValues();
+    }
 
-        List<TurConfigVar> savedVars = captor.getAllValues();
-        assertTrue(savedVars.stream().anyMatch(configVar -> "FIRST_TIME".equals(configVar.getId())
-                && "/system".equals(configVar.getPath())
-                && "true".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_DECIMAL_SEPARATOR".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "DOT".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_PYTHON_EXECUTABLE".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_PYTHON_REQUIREMENTS".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
+    /** Fails unless a {@code (id, path, value)} row was saved. */
+    private static void expectVar(List<TurConfigVar> savedVars, String id, String path, String value) {
         assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_CODE_INTERPRETER_EXECUTION_MODE".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "NATIVE".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_CODE_INTERPRETER_DOCKER_IMAGE".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "python:3.12-slim".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_CODE_INTERPRETER_SKILL_IMAGE".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "python:3.12-slim".equals(configVar.getValue())));
+                        id.equals(configVar.getId())
+                        && path.equals(configVar.getPath())
+                        && value.equals(configVar.getValue())),
+                () -> "Expected config var " + id + " at " + path + " = '" + value + "'");
+    }
+
+    @Test
+    void shouldSaveSystemAndCodeInterpreterDefaults() {
+        List<TurConfigVar> savedVars = savedDefaults();
+        expectVar(savedVars, "FIRST_TIME", "/system", "true");
+        expectVar(savedVars, "GLOBAL_DECIMAL_SEPARATOR", GLOBAL, "DOT");
+        expectVar(savedVars, "GLOBAL_PYTHON_EXECUTABLE", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_PYTHON_REQUIREMENTS", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_CODE_INTERPRETER_EXECUTION_MODE", GLOBAL, "NATIVE");
+        expectVar(savedVars, "GLOBAL_CODE_INTERPRETER_DOCKER_IMAGE", GLOBAL, "python:3.12-slim");
+        expectVar(savedVars, "GLOBAL_CODE_INTERPRETER_SKILL_IMAGE", GLOBAL, "python:3.12-slim");
+        // Secret is randomly generated each run — can't pin to a literal. Just
+        // verify it was minted (non-blank) and shaped like Base64 (≥40 chars).
         assertTrue(savedVars.stream().anyMatch(configVar ->
                 "GLOBAL_CODE_INTERPRETER_URL_SIGNING_SECRET".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                // Secret is randomly generated each run — can't pin to a literal.
-                // Just verify it was minted (non-blank) and shaped like Base64
-                // (44 chars for 32 random bytes).
+                && GLOBAL.equals(configVar.getPath())
                 && configVar.getValue() != null
                 && configVar.getValue().length() >= 40));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_DEFAULT_LLM".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_LLM_CACHE_ENABLED".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "false".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_LLM_CACHE_TTL_MS".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "3600000".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_LLM_CACHE_REGENERATE".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "false".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_EMAIL_PROVIDER".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "BREVO".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_EMAIL_API_KEY".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_SENDER_EMAIL".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_SENDER_NAME".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_RECIPIENT_EMAIL".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_RAG_ENABLED".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "false".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_DEFAULT_EMBEDDING_MODEL".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_DEFAULT_EMBEDDING_STORE".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_DEFAULT_AI_AGENT".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar -> "GLOBAL_PII_SLOT_TTL_HOURS".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "24".equals(configVar.getValue())));
+    }
+
+    @Test
+    void shouldSaveLlmEmailAndModelDefaults() {
+        List<TurConfigVar> savedVars = savedDefaults();
+        expectVar(savedVars, "GLOBAL_DEFAULT_LLM", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_LLM_CACHE_ENABLED", GLOBAL, "false");
+        expectVar(savedVars, "GLOBAL_LLM_CACHE_TTL_MS", GLOBAL, "3600000");
+        expectVar(savedVars, "GLOBAL_LLM_CACHE_REGENERATE", GLOBAL, "false");
+        expectVar(savedVars, "GLOBAL_EMAIL_PROVIDER", GLOBAL, "BREVO");
+        expectVar(savedVars, "GLOBAL_EMAIL_API_KEY", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_SENDER_EMAIL", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_SENDER_NAME", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_RECIPIENT_EMAIL", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_RAG_ENABLED", GLOBAL, "false");
+        expectVar(savedVars, "GLOBAL_DEFAULT_EMBEDDING_MODEL", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_DEFAULT_EMBEDDING_STORE", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_DEFAULT_AI_AGENT", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_PII_SLOT_TTL_HOURS", GLOBAL, "24");
+    }
+
+    @Test
+    void shouldSaveRagAndRerankDefaults() {
+        List<TurConfigVar> savedVars = savedDefaults();
         // T328 — SN RAG relevance gate + reranker defaults.
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_SIMILARITY_THRESHOLD".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "0.0".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_RERANK_ENABLED".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "false".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_RERANK_TOP_N".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "20".equals(configVar.getValue())));
+        expectVar(savedVars, "GLOBAL_RAG_SN_SIMILARITY_THRESHOLD", GLOBAL, "0.0");
+        expectVar(savedVars, "GLOBAL_RAG_SN_RERANK_ENABLED", GLOBAL, "false");
+        expectVar(savedVars, "GLOBAL_RAG_SN_RERANK_TOP_N", GLOBAL, "20");
         // T331 — grounded follow-up suggestions (default off).
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_FOLLOWUPS_ENABLED".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "false".equals(configVar.getValue())));
+        expectVar(savedVars, "GLOBAL_RAG_SN_FOLLOWUPS_ENABLED", GLOBAL, "false");
         // T330 — groundedness audit (default off).
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_GROUNDEDNESS_CHECK_ENABLED".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "false".equals(configVar.getValue())));
+        expectVar(savedVars, "GLOBAL_RAG_SN_GROUNDEDNESS_CHECK_ENABLED", GLOBAL, "false");
         // T337 — pluggable reranker strategy (default LLM) + connection vars.
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_RERANK_STRATEGY".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "LLM".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_RERANK_ENDPOINT".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_RERANK_MODEL".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
-        assertTrue(savedVars.stream().anyMatch(configVar ->
-                "GLOBAL_RAG_SN_RERANK_API_KEY".equals(configVar.getId())
-                && "/system/global".equals(configVar.getPath())
-                && "".equals(configVar.getValue())));
+        expectVar(savedVars, "GLOBAL_RAG_SN_RERANK_STRATEGY", GLOBAL, "LLM");
+        expectVar(savedVars, "GLOBAL_RAG_SN_RERANK_ENDPOINT", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_RAG_SN_RERANK_MODEL", GLOBAL, "");
+        expectVar(savedVars, "GLOBAL_RAG_SN_RERANK_API_KEY", GLOBAL, "");
     }
 
     @Test
@@ -160,14 +110,14 @@ class TurConfigVarOnStartupTest {
         // ensureConfigVar leaves these alone (existing row → no save), but
         // ensureSecretConfigVar AUTO-HEALS blank values for the HMAC
         // secret. So save is called exactly once — for the secret heal —
-        // and the other 18 rows are skipped.
-        when(turConfigVarRepository.findById(org.mockito.ArgumentMatchers.anyString()))
+        // and the other 49 rows are skipped.
+        when(turConfigVarRepository.findById(anyString()))
                 .thenReturn(Optional.of(new TurConfigVar()));
 
         turConfigVarOnStartup.createDefaultRows();
 
         ArgumentCaptor<TurConfigVar> captor = ArgumentCaptor.forClass(TurConfigVar.class);
-        verify(turConfigVarRepository, org.mockito.Mockito.times(1)).save(captor.capture());
+        verify(turConfigVarRepository, times(1)).save(captor.capture());
         TurConfigVar saved = captor.getValue();
         assertTrue("GLOBAL_CODE_INTERPRETER_URL_SIGNING_SECRET".equals(saved.getId())
                 || saved.getValue() != null && !saved.getValue().isBlank(),

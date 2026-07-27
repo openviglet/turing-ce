@@ -81,6 +81,10 @@ import lombok.extern.slf4j.Slf4j;
 @RequiredArgsConstructor
 public class TurRagBm25CoreAPI {
 
+    // --- S1192: extracted duplicated literals ---
+    private static final String LANGUAGE = "language";
+
+
     private final TurSNSiteRepository turSNSiteRepository;
     private final TurSNSiteLocaleRepository turSNSiteLocaleRepository;
     private final TurRagBm25CoreRepository ragBm25CoreRepository;
@@ -108,7 +112,16 @@ public class TurRagBm25CoreAPI {
     @Transactional(readOnly = true)
     @Secured({ "ROLE_ADMIN", "SN_VIEW" })
     public ResponseEntity<List<CoreStatusDto>> listCores(@PathVariable String siteId) {
-        Optional<TurSNSite> siteOpt = turSNSiteRepository.findByIdNoCache(siteId);
+        return buildCoreStatus(siteId);
+    }
+
+    /**
+     * Builds the per-locale core status table. Extracted so the transactional
+     * {@code provisionCores} endpoint can reuse it without a {@code this}-call to
+     * another {@code @Transactional} method (which would bypass the proxy).
+     */
+    private ResponseEntity<List<CoreStatusDto>> buildCoreStatus(String siteId) {
+        Optional<TurSNSite> siteOpt = turSNSiteRepository.findById(siteId);
         if (siteOpt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -119,7 +132,7 @@ public class TurRagBm25CoreAPI {
         }
 
         List<TurSNSiteLocale> locales = turSNSiteLocaleRepository.findByTurSNSite(
-                Sort.by(Sort.Direction.ASC, "language"), site);
+                Sort.by(Sort.Direction.ASC, LANGUAGE), site);
         List<CoreStatusDto> rows = new ArrayList<>(locales.size());
         for (TurSNSiteLocale loc : locales) {
             String tag = loc.getLanguage().toLanguageTag();
@@ -138,7 +151,7 @@ public class TurRagBm25CoreAPI {
                 rows.add(new CoreStatusDto(
                         tag,
                         turTenantCoreNaming.scoped(TurRagBm25CoreProvisioner.coreNameFor(
-                                resolveStoreInstance(storeInstanceId), loc.getLanguage())),
+                                resolveStoreInstance(), loc.getLanguage())),
                         TurRagBm25Core.Status.NOT_PROVISIONED.name(),
                         0L,
                         null,
@@ -153,7 +166,7 @@ public class TurRagBm25CoreAPI {
     @Transactional
     @Secured({ "ROLE_ADMIN", "SN_EDIT" })
     public ResponseEntity<List<CoreStatusDto>> provisionCores(@PathVariable String siteId) {
-        Optional<TurSNSite> siteOpt = turSNSiteRepository.findByIdNoCache(siteId);
+        Optional<TurSNSite> siteOpt = turSNSiteRepository.findById(siteId);
         if (siteOpt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -167,13 +180,13 @@ public class TurRagBm25CoreAPI {
         if (storeInstanceId == null || storeInstanceId.isBlank()) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(List.of());
         }
-        var storeInstance = resolveStoreInstance(storeInstanceId);
+        var storeInstance = resolveStoreInstance();
         if (storeInstance == null) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(List.of());
         }
 
         List<TurSNSiteLocale> locales = turSNSiteLocaleRepository.findByTurSNSite(
-                Sort.by(Sort.Direction.ASC, "language"), site);
+                Sort.by(Sort.Direction.ASC, LANGUAGE), site);
         for (TurSNSiteLocale loc : locales) {
             try {
                 // Idempotent — already-PROVISIONED rows return without
@@ -188,7 +201,7 @@ public class TurRagBm25CoreAPI {
         }
         // Return the updated status table so the UI can refresh in one
         // round-trip without a follow-up GET.
-        return listCores(siteId);
+        return buildCoreStatus(siteId);
     }
 
     @Operation(summary = "Deprovision every BM25 core registered for this SN site's store")
@@ -196,7 +209,7 @@ public class TurRagBm25CoreAPI {
     @Transactional
     @Secured({ "ROLE_ADMIN", "SN_EDIT" })
     public ResponseEntity<Void> deprovisionCores(@PathVariable String siteId) {
-        Optional<TurSNSite> siteOpt = turSNSiteRepository.findByIdNoCache(siteId);
+        Optional<TurSNSite> siteOpt = turSNSiteRepository.findById(siteId);
         if (siteOpt.isEmpty()) {
             return ResponseEntity.notFound().build();
         }
@@ -205,12 +218,12 @@ public class TurRagBm25CoreAPI {
         if (storeInstanceId == null || storeInstanceId.isBlank()) {
             return ResponseEntity.noContent().build();
         }
-        var storeInstance = resolveStoreInstance(storeInstanceId);
+        var storeInstance = resolveStoreInstance();
         if (storeInstance == null) {
             return ResponseEntity.noContent().build();
         }
         List<TurSNSiteLocale> locales = turSNSiteLocaleRepository.findByTurSNSite(
-                Sort.by(Sort.Direction.ASC, "language"), site);
+                Sort.by(Sort.Direction.ASC, LANGUAGE), site);
         for (TurSNSiteLocale loc : locales) {
             try {
                 provisioner.deprovision(storeInstance, loc.getLanguage());
@@ -230,7 +243,7 @@ public class TurRagBm25CoreAPI {
      * callers translate to a 400. Routed through {@link TurRagContextBuilder}
      * so the GenAI infra resolution path stays in one place.
      */
-    private com.viglet.turing.persistence.model.store.TurStoreInstance resolveStoreInstance(String storeInstanceId) {
+    private com.viglet.turing.persistence.model.store.TurStoreInstance resolveStoreInstance() {
         return ragContextBuilder.buildFromGlobalSettings()
                 .map(TurRagContextBuilder.RagInfrastructure::storeInstance)
                 .orElse(null);

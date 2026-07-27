@@ -52,6 +52,10 @@ class TurChatWebhookServiceTest {
     private TurChatWebhookRepository repository;
     @Mock
     private TurSecretCryptoService cryptoService;
+    @Mock
+    private com.viglet.core.webhook.VigletWebhookDispatcher webhookDispatcher;
+    @Mock
+    private com.viglet.turing.spring.security.ssrf.TurSsrfGuard ssrfGuard;
     @InjectMocks
     private TurChatWebhookService service;
 

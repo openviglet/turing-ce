@@ -9,13 +9,20 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
+import org.apache.hc.core5.http.NameValuePair;
+import org.apache.hc.core5.net.URIBuilder;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.mock.web.MockHttpServletRequest;
 
 import com.viglet.turing.commons.se.TurSEParameters;
 import com.viglet.turing.commons.se.result.spellcheck.TurSESpellCheckResult;
 import com.viglet.turing.commons.sn.bean.TurSNSiteSearchDocumentBean;
+import com.viglet.turing.commons.sn.search.TurSNParamType;
 import com.viglet.turing.commons.sn.search.TurSNSiteSearchContext;
 import com.viglet.turing.persistence.dto.sn.field.TurSNSiteFieldExtDto;
 import com.viglet.turing.persistence.model.sn.TurSNSite;
@@ -95,38 +102,20 @@ class TurSNUtilsTest {
         assertThat(TurSNUtils.hasCorrectedText(result)).isTrue();
     }
 
-    @Test
-    void hasCorrectedTextShouldReturnFalseWhenNotCorrected() {
-        TurSESpellCheckResult result = new TurSESpellCheckResult();
-        result.setCorrected(false);
-        result.setCorrectedText("some text");
-
-        assertThat(TurSNUtils.hasCorrectedText(result)).isFalse();
+    static Stream<Arguments> hasCorrectedTextFalseCases() {
+        return Stream.of(
+                Arguments.of(false, "some text"),
+                Arguments.of(true, ""),
+                Arguments.of(true, null),
+                Arguments.of(true, "   "));
     }
 
-    @Test
-    void hasCorrectedTextShouldReturnFalseWhenCorrectedButEmptyText() {
+    @ParameterizedTest(name = "corrected={0}, text=[{1}]")
+    @MethodSource("hasCorrectedTextFalseCases")
+    void hasCorrectedTextShouldReturnFalse(boolean corrected, String correctedText) {
         TurSESpellCheckResult result = new TurSESpellCheckResult();
-        result.setCorrected(true);
-        result.setCorrectedText("");
-
-        assertThat(TurSNUtils.hasCorrectedText(result)).isFalse();
-    }
-
-    @Test
-    void hasCorrectedTextShouldReturnFalseWhenCorrectedButNullText() {
-        TurSESpellCheckResult result = new TurSESpellCheckResult();
-        result.setCorrected(true);
-        result.setCorrectedText(null);
-
-        assertThat(TurSNUtils.hasCorrectedText(result)).isFalse();
-    }
-
-    @Test
-    void hasCorrectedTextShouldReturnFalseWhenCorrectedButBlankText() {
-        TurSESpellCheckResult result = new TurSESpellCheckResult();
-        result.setCorrected(true);
-        result.setCorrectedText("   ");
+        result.setCorrected(corrected);
+        result.setCorrectedText(correctedText);
 
         assertThat(TurSNUtils.hasCorrectedText(result)).isFalse();
     }
@@ -193,9 +182,10 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.addFilterQuery(uri, "category:books");
         String resultStr = result.toString();
 
-        assertThat(resultStr).containsAnyOf("fq%5B%5D=category", "fq[]=category");
-        assertThat(resultStr).contains("category");
-        assertThat(resultStr).contains("books");
+        assertThat(resultStr)
+                .containsAnyOf("fq%5B%5D=category", "fq[]=category")
+                .contains("category")
+                .contains("books");
     }
 
     @Test
@@ -214,8 +204,9 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.addFilterQuery(uri, "category:books");
         String resultStr = result.toString();
 
-        assertThat(resultStr).contains("p=1");
-        assertThat(resultStr).doesNotContain("p=5");
+        assertThat(resultStr)
+                .contains("p=1")
+                .doesNotContain("p=5");
     }
 
     @Test
@@ -224,8 +215,9 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.addFilterQuery(uri, "type:pdf");
         String resultStr = result.toString();
 
-        assertThat(resultStr).contains("q=test");
-        assertThat(resultStr).contains("sort=date");
+        assertThat(resultStr)
+                .contains("q=test")
+                .contains("sort=date");
     }
 
     @Test
@@ -235,8 +227,30 @@ class TurSNUtilsTest {
         URI result2 = TurSNUtils.addFilterQuery(result1, "type:pdf");
         String resultStr = result2.toString();
 
-        assertThat(resultStr).contains("category");
-        assertThat(resultStr).contains("pdf");
+        assertThat(resultStr)
+                .contains("category")
+                .contains("pdf");
+    }
+
+    @Test
+    void addFilterQueryShouldPercentEncodeAmpersandInValue() {
+        // A facet value containing '&' (e.g. "RAG & Chat") must be percent-encoded
+        // so the '&' is not read as a parameter separator. Regression: the filter
+        // was truncated to "section:RAG " on the wire and matched no documents.
+        URI uri = URI.create("http://localhost/search?q=*");
+        URI result = TurSNUtils.addFilterQuery(uri, "section:RAG & Chat");
+
+        // '&' and spaces encoded; ':' kept literal for readable links.
+        assertThat(result.getRawQuery())
+                .contains("fq[]=section:RAG%20%26%20Chat")
+                .doesNotContain("RAG & Chat");
+
+        // Round-trips (as the search code reads it) back to the intact value.
+        List<String> fq = new URIBuilder(result).getQueryParams().stream()
+                .filter(p -> TurSNParamType.FILTER_QUERIES_DEFAULT.equals(p.getName()))
+                .map(NameValuePair::getValue)
+                .toList();
+        assertThat(fq).containsExactly("section:RAG & Chat");
     }
 
     // --- removeFilterQuery ---
@@ -257,8 +271,9 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.removeFilterQuery(uri, "category:books");
         String resultStr = result.toString();
 
-        assertThat(resultStr).doesNotContain("category");
-        assertThat(resultStr).contains("type");
+        assertThat(resultStr)
+                .doesNotContain("category")
+                .contains("type");
     }
 
     @Test
@@ -279,8 +294,9 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.removeQueryStringParameter(uri, "p");
         String resultStr = result.toString();
 
-        assertThat(resultStr).doesNotContain("p=2");
-        assertThat(resultStr).contains("q=test");
+        assertThat(resultStr)
+                .doesNotContain("p=2")
+                .contains("q=test");
     }
 
     @Test
@@ -298,8 +314,9 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.removeQueryStringParameter(uri, "sort");
         String resultStr = result.toString();
 
-        assertThat(resultStr).doesNotContain("sort");
-        assertThat(resultStr).contains("q=test");
+        assertThat(resultStr)
+                .doesNotContain("sort")
+                .contains("q=test");
     }
 
     // --- removeFilterQueryByFieldName / removeFilterQueryByFieldNames ---
@@ -311,8 +328,9 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.removeFilterQueryByFieldName(uri, "category");
         String resultStr = result.toString();
 
-        assertThat(resultStr).doesNotContain("category");
-        assertThat(resultStr).contains("q=test");
+        assertThat(resultStr)
+                .doesNotContain("category")
+                .contains("q=test");
     }
 
     @Test
@@ -322,9 +340,10 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.removeFilterQueryByFieldNames(uri, Arrays.asList("category", "type"));
         String resultStr = result.toString();
 
-        assertThat(resultStr).doesNotContain("category");
-        assertThat(resultStr).doesNotContain("type");
-        assertThat(resultStr).contains("author");
+        assertThat(resultStr)
+                .doesNotContain("category")
+                .doesNotContain("type")
+                .contains("author");
     }
 
     @Test
@@ -334,8 +353,9 @@ class TurSNUtilsTest {
         URI result = TurSNUtils.removeFilterQueryByFieldNames(uri, Collections.singletonList("category"));
         String resultStr = result.toString();
 
-        assertThat(resultStr).contains("q=test");
-        assertThat(resultStr).contains("sort=date");
+        assertThat(resultStr)
+                .contains("q=test")
+                .contains("sort=date");
     }
 
     // --- filterQueryByFieldName / filterQueryByFieldNames ---

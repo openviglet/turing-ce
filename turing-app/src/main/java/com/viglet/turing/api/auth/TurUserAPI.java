@@ -22,6 +22,7 @@
 package com.viglet.turing.api.auth;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 
 import org.springframework.http.ResponseEntity;
@@ -67,6 +68,10 @@ import lombok.extern.slf4j.Slf4j;
 @RequestMapping("/api/v2/user")
 @Tag(name = "User", description = "User API")
 public class TurUserAPI {
+
+    // --- S1192: extracted duplicated literals ---
+    private static final String ERROR = "error";
+
 
     private static final String ADMIN = "admin";
     private static final String ADMINISTRATOR = "Administrator";
@@ -124,17 +129,18 @@ public class TurUserAPI {
     }
 
     private String currentUsername() {
-        return SecurityContextHolder.getContext().getAuthentication().getName();
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null ? authentication.getName() : null;
     }
 
     private boolean isAdmin() {
-        return SecurityContextHolder.getContext().getAuthentication()
-                .getAuthorities().stream()
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        return authentication != null && authentication.getAuthorities().stream()
                 .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
     }
 
     private boolean isAdminOrSelf(String username) {
-        return isAdmin() || currentUsername().equals(username);
+        return isAdmin() || Objects.equals(currentUsername(), username);
     }
 
     @Secured("ROLE_ADMIN")
@@ -146,9 +152,9 @@ public class TurUserAPI {
     @GetMapping("/current")
     public TurCurrentUser turUserCurrent() {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        if (!(authentication instanceof AnonymousAuthenticationToken)) {
-            if (authentication.getPrincipal() instanceof OAuth2User) {
-                return oauth2User();
+        if (authentication != null && !(authentication instanceof AnonymousAuthenticationToken)) {
+            if (authentication.getPrincipal() instanceof OAuth2User oauthUser) {
+                return oauth2User(authentication, oauthUser);
             } else {
                 return regularUser(authentication.getName());
             }
@@ -182,16 +188,12 @@ public class TurUserAPI {
         return turCurrentUser;
     }
 
-    private TurCurrentUser oauth2User() {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        OAuth2User user = ((OAuth2User) authentication.getPrincipal());
-        String realm = (authentication instanceof OAuth2AuthenticationToken oauthToken)
-                ? oauthToken.getAuthorizedClientRegistrationId()
-                : "oauth2";
-        String username = firstNonNull(user, PREFERRED_USERNAME, "login", EMAIL);
-        String email = firstNonNull(user, EMAIL);
-        String picture = firstNonNull(user, "picture", "avatar_url");
+    /** First/last name resolved from an OAuth2 principal. */
+    private record OauthNames(String firstName, String lastName) {
+    }
 
+    /** Resolves given/family name, falling back to splitting a single "name" attribute. */
+    private OauthNames resolveNames(OAuth2User user) {
         String firstName = user.getAttribute(GIVEN_NAME);
         String lastName = user.getAttribute(FAMILY_NAME);
         if (firstName == null && lastName == null) {
@@ -202,47 +204,68 @@ public class TurUserAPI {
                 lastName = space > 0 ? fullName.substring(space + 1) : null;
             }
         }
+        return new OauthNames(firstName, lastName);
+    }
 
+    /** Creates or updates the local {@link TurUser} mirror from the OAuth2 attributes. */
+    private TurUser upsertOauthUser(String username, OauthNames names, String email,
+            String picture, String realm) {
         TurUser turUser = turUserRepository.findByUsername(username);
         if (turUser == null) {
             turUser = TurUser.builder()
                     .username(username)
-                    .firstName(firstName)
-                    .lastName(lastName)
+                    .firstName(names.firstName())
+                    .lastName(names.lastName())
                     .email(email)
                     .avatarUrl(picture)
                     .realm(realm)
                     .enabled(1)
                     .build();
-            turUserRepository.save(turUser);
         } else {
-            turUser.setFirstName(firstName);
-            turUser.setLastName(lastName);
+            turUser.setFirstName(names.firstName());
+            turUser.setLastName(names.lastName());
             turUser.setEmail(email);
             turUser.setRealm(realm);
             if (picture != null && turUser.getAvatarUrl() == null) {
                 turUser.setAvatarUrl(picture);
             }
-            turUserRepository.save(turUser);
         }
+        turUserRepository.save(turUser);
+        return turUser;
+    }
 
-        boolean isAdmin = !turConfigProperties.isPermissions();
-        if (!isAdmin) {
-            var groups = turGroupRepository.findByTurUsersContaining(turUser);
-            if (groups != null) {
-                for (TurGroup turGroup : groups) {
-                    if (ADMINISTRATOR.equals(turGroup.getName())) {
-                        isAdmin = true;
-                        break;
-                    }
+    /** Admin when permissions are disabled, or the user belongs to the ADMINISTRATOR group. */
+    private boolean resolveIsAdmin(TurUser turUser) {
+        if (!turConfigProperties.isPermissions()) {
+            return true;
+        }
+        var groups = turGroupRepository.findByTurUsersContaining(turUser);
+        if (groups != null) {
+            for (TurGroup turGroup : groups) {
+                if (ADMINISTRATOR.equals(turGroup.getName())) {
+                    return true;
                 }
             }
         }
+        return false;
+    }
+
+    private TurCurrentUser oauth2User(Authentication authentication, OAuth2User user) {
+        String realm = (authentication instanceof OAuth2AuthenticationToken oauthToken)
+                ? oauthToken.getAuthorizedClientRegistrationId()
+                : "oauth2";
+        String username = firstNonNull(user, PREFERRED_USERNAME, "login", EMAIL);
+        String email = firstNonNull(user, EMAIL);
+        String picture = firstNonNull(user, "picture", "avatar_url");
+
+        OauthNames names = resolveNames(user);
+        TurUser turUser = upsertOauthUser(username, names, email, picture, realm);
+        boolean isAdmin = resolveIsAdmin(turUser);
 
         TurCurrentUser turCurrentUser = new TurCurrentUser();
         turCurrentUser.setUsername(username);
-        turCurrentUser.setFirstName(firstName);
-        turCurrentUser.setLastName(lastName);
+        turCurrentUser.setFirstName(names.firstName());
+        turCurrentUser.setLastName(names.lastName());
         turCurrentUser.setEmail(email);
         turCurrentUser.setAdmin(isAdmin);
         turCurrentUser.setAvatarUrl(turUser.getAvatarUrl());
@@ -315,17 +338,38 @@ public class TurUserAPI {
 
     public record RegisterRequest(String username, String password, String firstName, String lastName, String email) {}
 
+    /** T652 / §XXXVII.14 — safe self-registration username: 3-100 chars, letters/digits/._-@. */
+    private static final java.util.regex.Pattern REGISTRATION_USERNAME =
+            java.util.regex.Pattern.compile("^[A-Za-z0-9._@-]{3,100}$");
+
+    static boolean isValidRegistrationUsername(String username) {
+        return username != null && REGISTRATION_USERNAME.matcher(username).matches();
+    }
+
     @PostMapping("/register")
-    public ResponseEntity<?> turUserRegister(@RequestBody RegisterRequest request) {
+    public ResponseEntity<Object> turUserRegister(@RequestBody RegisterRequest request) {
         if (turConfigProperties.getAuthentication() == null
                 || !turConfigProperties.getAuthentication().isNewUser()) {
-            return ResponseEntity.status(403).body(java.util.Map.of("error", "Self-registration is disabled"));
+            return ResponseEntity.status(403).body(java.util.Map.of(ERROR, "Self-registration is disabled"));
         }
         if (!StringUtils.hasText(request.username()) || !StringUtils.hasText(request.password())) {
-            return ResponseEntity.badRequest().body(java.util.Map.of("error", "Username and password are required"));
+            return ResponseEntity.badRequest().body(java.util.Map.of(ERROR, "Username and password are required"));
+        }
+        // T652 / §XXXVII.14 — constrain the self-registration username to a safe
+        // charset + length instead of accepting an arbitrary string, and enforce
+        // a minimum password length. Self-registered users only get the User
+        // group (never admin), but a bounded, well-formed username avoids
+        // surprising log/display/lookup behaviour from exotic input.
+        if (!isValidRegistrationUsername(request.username())) {
+            return ResponseEntity.badRequest().body(java.util.Map.of(ERROR,
+                    "Username must be 3-100 characters using letters, digits, and . _ - @ only"));
+        }
+        if (request.password().length() < 8) {
+            return ResponseEntity.badRequest().body(java.util.Map.of(ERROR,
+                    "Password must be at least 8 characters"));
         }
         if (turUserRepository.findByUsername(request.username()) != null) {
-            return ResponseEntity.badRequest().body(java.util.Map.of("error", "Username already exists"));
+            return ResponseEntity.badRequest().body(java.util.Map.of(ERROR, "Username already exists"));
         }
         TurUser turUser = TurUser.builder()
                 .username(request.username())

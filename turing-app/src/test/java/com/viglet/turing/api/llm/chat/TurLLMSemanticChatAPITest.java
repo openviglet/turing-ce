@@ -44,6 +44,10 @@ class TurLLMSemanticChatAPITest {
     @Mock
     private TurDslToolService dslToolService;
     @Mock
+    private com.viglet.turing.genai.catalog.TurCatalogCopilotToolService catalogCopilotToolService;
+    @Mock
+    private com.viglet.turing.genai.catalog.TurRankingExplainToolService rankingExplainToolService;
+    @Mock
     private TurMcpToolCallbackService mcpToolCallbackService;
     @Mock
     private TurToolCallbackPipeline toolCallbackPipeline;
@@ -59,7 +63,8 @@ class TurLLMSemanticChatAPITest {
         api = new TurLLMSemanticChatAPI(
                 turLLMInstanceRepository, turLLMInstanceRepositoryPort,
                 llmProviderFactory, llmModelFactory, turSecretCryptoService,
-                dslToolService, mcpToolCallbackService, toolCallbackPipeline, tokenUsageService,
+                dslToolService, catalogCopilotToolService, rankingExplainToolService,
+                mcpToolCallbackService, toolCallbackPipeline, tokenUsageService,
                 new com.viglet.turing.genai.TurToolExecutionLoop());
     }
 

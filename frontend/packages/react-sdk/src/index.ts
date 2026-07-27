@@ -14,7 +14,9 @@ export {
   fetchAgentContextInfo,
   postChatConversation,
   postAgentChat,
+  postPersonaChat,
   postLlmChat,
+  postSemanticChat,
   deleteSiteConversationState,
   deleteAgentFlowState,
   fetchAutoComplete,
@@ -23,20 +25,40 @@ export {
   fetchAgentChatSlots,
   postSiteChatSlot,
   postSiteSlotExtract,
+  postSiteSlotExtractMulti,
   postSiteHandoff,
   postSiteFlowSelect,
+  fetchPersonaContentFit,
   postSiteFormSubmit,
   fetchSiteChatState,
   fetchSortOptions,
+  fetchSimilar,
+  postSiteSlotUpload,
+  postSiteChatResume,
+  fetchSpellCheck,
+  fetchRelatedTerms,
+  dslSearch,
+  dslQuery,
+  fetchDiscovery,
+  fetchFeatures,
+  fetchSystemLocales,
+  fetchLlmVendors,
+  postSummary,
   parseHrefToParams,
   postClick,
+  fetchVoiceAvailability,
+  postVoiceSession,
+  postVoiceTranslation,
   CHAT_DISABLED_HINTS,
+  LOW_CONFIDENCE_THRESHOLD,
 } from "./core/api";
 export type {
   SearchParams,
   PostChatConversationOptions,
   PostAgentChatOptions,
+  PostPersonaChatOptions,
   PostLlmChatOptions,
+  PostSemanticChatOptions,
   ChatEnabledResponse,
   ChatDisabledReason,
   ClickTrackParams,
@@ -49,7 +71,28 @@ export type {
   TurChatHandoffChannel,
   TurChatHandoffResponse,
   TurChatFlowSelectResponse,
+  TurPersonaOption,
+  TurPersonaPersonality,
+  TurContentFit,
+  TurContentFitMisfit,
   TurChatConversationState,
+  TurSimilarMode,
+  TurSimilarResult,
+  FetchSimilarParams,
+  TurChatSlotUploadResponse,
+  PostSlotUploadOptions,
+  SlotExtractOptions,
+  TurChatResumeResponse,
+  TurDslSearchRequest,
+  TurDslSearchHit,
+  TurDslSearchResponse,
+  TurDiscoveryInfo,
+  TurFeaturesInfo,
+  TurSystemLocale,
+  TurSummaryResult,
+  TurVoiceAvailability,
+  TurVoiceSession,
+  PostVoiceSessionOptions,
 } from "./core/api";
 
 // ── Session ──
@@ -67,7 +110,7 @@ export { resolveDocuments, resolveGroups } from "./core/resolve";
 
 // ── Hooks ──
 export { useTuringSearch } from "./hooks/use-turing-search";
-export type { UseTuringSearchReturn } from "./hooks/use-turing-search";
+export type { UseTuringSearchReturn, UseTuringSearchOptions } from "./hooks/use-turing-search";
 export { useTuringAutoComplete } from "./hooks/use-turing-autocomplete";
 export type { UseTuringAutoCompleteReturn } from "./hooks/use-turing-autocomplete";
 export { useTuringSortOptions } from "./hooks/use-turing-sort-options";
@@ -88,12 +131,75 @@ export { useTuringTabs } from "./hooks/use-turing-tabs";
 export type { UseTuringTabsReturn, UseTuringTabsOptions, TabDefinition, EnrichedTab } from "./hooks/use-turing-tabs";
 export { useTuringChat } from "./hooks/use-turing-chat";
 export type { UseTuringChatReturn, UseTuringChatOptions, UseTuringChatAgent, ChatMessage, ChatStatus, SendOverrides } from "./hooks/use-turing-chat";
+export { useGenerativeUI } from "./hooks/use-turing-generative-ui";
+export type { UseGenerativeUIReturn } from "./hooks/use-turing-generative-ui";
+export { useAnswerAsApp } from "./hooks/use-turing-answer-as-app";
+export type { UseAnswerAsAppReturn } from "./hooks/use-turing-answer-as-app";
+export { useCoBrowseSearch } from "./hooks/use-turing-co-browse";
+export type { UseCoBrowseReturn } from "./hooks/use-turing-co-browse";
+export { useTuringProactiveCopilot } from "./hooks/use-turing-proactive-copilot";
+export type {
+  TuringProactiveSuggestion,
+  UseTuringProactiveCopilotOptions,
+  UseTuringProactiveCopilotReturn,
+} from "./hooks/use-turing-proactive-copilot";
+// T792 / §LIV.3 (Block BF) — Vectorless (Structured-Data) RAG copilot.
+export { useTuringCopilot } from "./hooks/use-turing-copilot";
+export type {
+  UseTuringCopilotOptions,
+  UseTuringCopilotReturn,
+  CopilotMessage,
+  CopilotStatus,
+} from "./hooks/use-turing-copilot";
+export type { TurCatalogCitation, TurCatalogCopilotResult } from "./core/api";
+export { useTuringUserMemory } from "./hooks/use-turing-user-memory";
+export type {
+  TuringUserMemory,
+  UseTuringUserMemoryOptions,
+  UseTuringUserMemoryReturn,
+} from "./hooks/use-turing-user-memory";
 export { useTuringLlmChat } from "./hooks/use-turing-llm-chat";
 export type {
   UseTuringLlmChatReturn,
   UseTuringLlmChatOptions,
   LlmSendOverrides,
 } from "./hooks/use-turing-llm-chat";
+
+// ── Analytics (Block Z, T463) ──
+export { useTuringAnalytics } from "./hooks/use-turing-analytics";
+export type {
+  UseTuringAnalyticsOptions,
+  UseTuringAnalyticsReturn,
+} from "./hooks/use-turing-analytics";
+export {
+  createTuringAnalytics,
+  TURING_ANALYTICS_EVENTS,
+} from "./core/analytics";
+export type {
+  TuringAnalytics,
+  TuringAnalyticsOptions,
+  TuringAnalyticsContext,
+  TuringAnalyticsEvent,
+  TuringAnalyticsEventName,
+  TuringAnalyticsSink,
+  TuringAnalyticsValue,
+} from "./core/analytics";
+export { googleAnalyticsSink, onEventSink, debugSink } from "./core/analytics-sinks";
+export type {
+  GoogleAnalyticsSinkOptions,
+  DebugSinkOptions,
+} from "./core/analytics-sinks";
+export { createAbandonmentWatcher } from "./core/analytics-lifecycle";
+export type {
+  AbandonmentOptions,
+  AbandonmentReason,
+  AbandonmentWatcher,
+} from "./core/analytics-lifecycle";
+export { useTuringSemanticChat } from "./hooks/use-turing-semantic-chat";
+export type {
+  UseTuringSemanticChatReturn,
+  UseTuringSemanticChatOptions,
+} from "./hooks/use-turing-semantic-chat";
 export { useTuringIntents } from "./hooks/use-turing-intents";
 export type { UseTuringIntentsReturn } from "./hooks/use-turing-intents";
 export { useTuringSlots } from "./hooks/use-turing-slots";
@@ -154,6 +260,13 @@ export type {
   UseTuringVoiceReturn,
   UseTuringVoiceOptions,
 } from "./hooks/use-turing-voice";
+export { useTuringRealtimeVoice } from "./hooks/use-turing-realtime-voice";
+export type {
+  UseTuringRealtimeVoiceReturn,
+  UseTuringRealtimeVoiceOptions,
+  RealtimeVoiceStatus,
+  RealtimeToolCall,
+} from "./hooks/use-turing-realtime-voice";
 export { useTuringFlowState } from "./hooks/use-turing-flow-state";
 export type {
   UseTuringFlowStateReturn,
@@ -170,6 +283,46 @@ export type {
 export { useTuringClickTracking } from "./hooks/use-turing-click-tracking";
 export type { UseTuringClickTrackingReturn } from "./hooks/use-turing-click-tracking";
 
+// ── Block S — SDK parity hooks (v2026.3.4) ──
+export { useTuringSimilar } from "./hooks/use-turing-similar";
+export type {
+  UseTuringSimilarReturn,
+  UseTuringSimilarOptions,
+} from "./hooks/use-turing-similar";
+export { useTuringSpellCheck } from "./hooks/use-turing-spell-check";
+export { useTuringRelatedTerms } from "./hooks/use-turing-related-terms";
+export type {
+  UseTuringRelatedTermsReturn,
+  UseTuringRelatedTermsOptions,
+} from "./hooks/use-turing-related-terms";
+export type {
+  UseTuringSpellCheckReturn,
+  UseTuringSpellCheckOptions,
+} from "./hooks/use-turing-spell-check";
+export { useTuringSlotUpload } from "./hooks/use-turing-slot-upload";
+export type {
+  UseTuringSlotUploadReturn,
+  UseTuringSlotUploadOptions,
+  SlotUploadStatus,
+} from "./hooks/use-turing-slot-upload";
+export { useTuringResume } from "./hooks/use-turing-resume";
+export type {
+  UseTuringResumeReturn,
+  UseTuringResumeOptions,
+  ResumeStatus,
+} from "./hooks/use-turing-resume";
+export { useTuringDslSearch } from "./hooks/use-turing-dsl-search";
+export type {
+  UseTuringDslSearchReturn,
+  UseTuringDslSearchOptions,
+  DslSearchStatus,
+} from "./hooks/use-turing-dsl-search";
+export { useTuringPlatformInfo } from "./hooks/use-turing-platform-info";
+export type {
+  UseTuringPlatformInfoReturn,
+  UseTuringPlatformInfoOptions,
+} from "./hooks/use-turing-platform-info";
+
 // ── UI Components ──
 // TuringSearchBar / TuringResultList / TuringPagination moved to
 // @viglet/turing-react-ui (T306) and are re-exported below alongside the other
@@ -177,6 +330,8 @@ export type { UseTuringClickTrackingReturn } from "./hooks/use-turing-click-trac
 export { TuringSearchField } from "./ui/TuringSearchField";
 export { TuringWorkspacePanel } from "./ui/TuringWorkspacePanel";
 export type { TuringWorkspacePanelProps } from "./ui/TuringWorkspacePanel";
+export { TuringCopilot } from "./ui/TuringCopilot";
+export type { TuringCopilotProps, TuringCopilotClassNames } from "./ui/TuringCopilot";
 
 // ── Headless UI (re-exported from @viglet/turing-react-ui) ──
 // Single import surface for the admin console: it can pull the design-agnostic
@@ -197,6 +352,10 @@ export {
   TuringCodeBlock,
   TuringChatMessage,
   TuringSourceChips,
+  TuringToolActivity,
+  TuringGenerativeContent,
+  TuringCitedAnswer,
+  segmentCitedAnswer,
   TuringSearchBar,
   TuringResultList,
   TuringPagination,
@@ -240,6 +399,20 @@ export type {
   TuringSourceChipsIcons,
   TuringRagSource,
   TuringSourceConfidence,
+  TuringToolActivityProps,
+  TuringToolActivityClassNames,
+  TuringToolActivityLabels,
+  TuringToolActivityIcons,
+  TuringToolCall,
+  TuringGenerativeContentProps,
+  TuringGenerativeContentClassNames,
+  TuringGenerativeItem,
+  TuringGenerativeComponentProps,
+  TuringGenerativeRegistry,
+  TuringCitedAnswerProps,
+  TuringCitedAnswerClassNames,
+  TuringCitation,
+  TuringCitedMark,
   TuringSearchBarProps,
   TuringSearchBarInputProps,
   TuringResultListProps,
@@ -269,11 +442,14 @@ export type {
   TurSearchResults,
   TurDocument,
   TurDocumentMetadata,
+  TurDuplicateCluster,
+  TurDuplicateClusterMember,
   TurPaginationItem,
   TurWidget,
   TurFacetGroup,
   TurFacetItem,
   TurSpellCheck,
+  TurRelatedTermSuggestion,
   TurLocaleItem,
   TurSortOption,
   TurChatResponse,
@@ -281,6 +457,11 @@ export type {
   TurChatConversationResponse,
   TurChatStreamEvent,
   TurChatSource,
+  TurChatCitation,
+  TurChatGrounding,
+  TurChatSecondOpinion,
+  TurSearchSuggestions,
+  TurChatToolCall,
   TurChatForm,
   TurChatFormField,
   TurChatFormSubmitResponse,

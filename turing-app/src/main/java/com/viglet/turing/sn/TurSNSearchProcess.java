@@ -69,6 +69,7 @@ import com.viglet.turing.sn.facet.TurSNFacetRenderer;
 import com.viglet.turing.sn.facet.TurSNFacetTypeContext;
 import com.viglet.turing.sn.pagination.TurSNPaginationBuilder;
 import com.viglet.turing.sn.querycontext.TurSNQueryContextBuilder;
+import com.viglet.turing.sn.ranking.TurSNHybridRankingService;
 import com.viglet.turing.sn.snapshot.TurSNSiteSearchSnapshot;
 import com.viglet.turing.sn.snapshot.TurSNSiteSearchSnapshotService;
 import com.viglet.turing.sn.spotlight.TurSNSpotlightProcess;
@@ -98,6 +99,8 @@ public class TurSNSearchProcess {
         private final TurSNDocumentResponse documentResponse;
         private final TurSNQueryContextBuilder queryContextBuilder;
         private final TurSearchPipelineObservation pipelineObservation;
+        private final TurSNHybridRankingService hybridRankingService;
+        private final TurSNDuplicateClusteringService duplicateClusteringService;
 
         public TurSNSearchProcess(TurSNSiteSearchSnapshotService snapshotService,
                         TurSolrInstanceProcess turSolrInstanceProcess,
@@ -112,7 +115,9 @@ public class TurSNSearchProcess {
                         TurSNPaginationBuilder paginationBuilder,
                         TurSNDocumentResponse documentResponse,
                         TurSNQueryContextBuilder queryContextBuilder,
-                        TurSearchPipelineObservation pipelineObservation) {
+                        TurSearchPipelineObservation pipelineObservation,
+                        TurSNHybridRankingService hybridRankingService,
+                        TurSNDuplicateClusteringService duplicateClusteringService) {
                 this.snapshotService = snapshotService;
                 this.turSolrInstanceProcess = turSolrInstanceProcess;
                 this.turSNSpotlightProcess = turSNSpotlightProcess;
@@ -127,6 +132,8 @@ public class TurSNSearchProcess {
                 this.documentResponse = documentResponse;
                 this.queryContextBuilder = queryContextBuilder;
                 this.pipelineObservation = pipelineObservation;
+                this.hybridRankingService = hybridRankingService;
+                this.duplicateClusteringService = duplicateClusteringService;
         }
 
         public Optional<TurSNSite> getSNSite(String siteName) {
@@ -178,11 +185,61 @@ public class TurSNSearchProcess {
                         return new TurSNSiteSearchBean();
                 }
                 TurSEResults turSEResults = resultsOpt.get();
+                applyHybridRanking(context, snap, turSEResults);
+                attachDuplicateClusters(context, snap, plugin, turSEResults);
                 TurSolrInstance solrInstance = turSolrInstanceProcess
                                 .initSolrInstance(context.getSiteName(), context.getLocale())
                                 .orElse(null);
                 return pipelineObservation.record(TurMeterNames.STAGE_SEARCH_RESPONSE,
                                 () -> searchResponse(context, snap, solrInstance, turSEResults));
+        }
+
+        /**
+         * T383 / §XX.3 — when the site opted into {@code HYBRID_RRF} and the
+         * request is a relevance-sorted, ungrouped keyword query, reorder the
+         * lexical result page by fusing BM25 with a vector ranking via RRF.
+         * Facet counts and pagination stay BM25-derived; explicit sorts and the
+         * match-all ({@code *}) query are left untouched. No-op (and never
+         * throws) for legacy sites — fusion itself is fail-open.
+         */
+        private void applyHybridRanking(TurSNSiteSearchContext context,
+                        TurSNSiteSearchSnapshot snap, TurSEResults turSEResults) {
+                if (!hybridRankingService.isEnabled(snap.site())) {
+                        return;
+                }
+                String query = context.getTurSEParameters().getQuery();
+                String sort = context.getTurSEParameters().getSort();
+                boolean relevanceSort = sort == null || sort.isBlank()
+                                || "relevance".equalsIgnoreCase(sort);
+                if (!relevanceSort || query == null || query.trim().equals("*")
+                                || turSolrQueryBuilder.hasGroup(context.getTurSEParameters())
+                                || CollectionUtils.isEmpty(turSEResults.getResults())) {
+                        return;
+                }
+                turSEResults.setResults(hybridRankingService.fuse(snap.site(),
+                                context.getLocale(), query, turSEResults.getResults()));
+        }
+
+        /**
+         * T390 / §XX.10 — when the site has MoreLikeThis enabled and is on a hybrid
+         * ranking mode (so a vector collection exists), attach to each result its
+         * cluster of near-identical documents — the same real-world entity arriving
+         * from many sources — with provenance, so the catalog can collapse the
+         * duplicates. Reuses the existing MLT toggle as the opt-in; the page-level
+         * lexical {@code widget.similar} is left as-is. No-op (and never throws) on
+         * non-hybrid sites, so legacy responses are unchanged.
+         */
+        private void attachDuplicateClusters(TurSNSiteSearchContext context,
+                        TurSNSiteSearchSnapshot snap, TurSearchEnginePlugin plugin,
+                        TurSEResults turSEResults) {
+                if (!TurSNUtils.isTrue(snap.site().getMlt())
+                                || CollectionUtils.isEmpty(turSEResults.getResults())) {
+                        return;
+                }
+                duplicateClusteringService.attachClusters(snap, context.getLocale(), plugin,
+                                turSEResults.getResults(),
+                                TurSNDuplicateClusteringService.DEFAULT_THRESHOLD,
+                                TurSNDuplicateClusteringService.DEFAULT_MAX_MEMBERS);
         }
 
         public List<Object> searchList(TurSNSiteSearchContext context) {

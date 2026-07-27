@@ -56,10 +56,11 @@ class TurPersonaStaticPromptCacheTest {
         p.setVerbosity(3);
         p.setLanguageStyle(TurPersonaLanguageStyle.NEUTRAL);
         String out = cache.composeStaticBlock(p);
-        assertThat(out).contains("# Style Guidelines");
-        assertThat(out).contains("Tone: formal");
-        assertThat(out).contains("Verbosity (1=terse, 5=expansive): 3");
-        assertThat(out).contains("Language Style: neutral");
+        assertThat(out)
+                .contains("# Style Guidelines")
+                .contains("Tone: formal")
+                .contains("Verbosity (1=terse, 5=expansive): 3")
+                .contains("Language Style: neutral");
     }
 
     @Test
@@ -77,10 +78,11 @@ class TurPersonaStaticPromptCacheTest {
         TurPersona p = persona("p-4", null);
         p.setMandatoryTerms("agile | iteration | sprint");
         String out = cache.composeStaticBlock(p);
-        assertThat(out).contains("# Required Vocabulary");
-        assertThat(out).contains("- agile");
-        assertThat(out).contains("- iteration");
-        assertThat(out).contains("- sprint");
+        assertThat(out)
+                .contains("# Required Vocabulary")
+                .contains("- agile")
+                .contains("- iteration")
+                .contains("- sprint");
     }
 
     @Test
@@ -88,9 +90,10 @@ class TurPersonaStaticPromptCacheTest {
         TurPersona p = persona("p-5", null);
         p.setForbiddenTerms("guaranteed | risk-free");
         String out = cache.composeStaticBlock(p);
-        assertThat(out).contains("# Forbidden Vocabulary");
-        assertThat(out).contains("- guaranteed");
-        assertThat(out).contains("- risk-free");
+        assertThat(out)
+                .contains("# Forbidden Vocabulary")
+                .contains("- guaranteed")
+                .contains("- risk-free");
     }
 
     @Test
@@ -100,8 +103,9 @@ class TurPersonaStaticPromptCacheTest {
         p.setMandatoryTerms("  |  ");
         p.setForbiddenTerms(null);
         String out = cache.composeStaticBlock(p);
-        assertThat(out).doesNotContain("# Required Vocabulary");
-        assertThat(out).doesNotContain("# Forbidden Vocabulary");
+        assertThat(out)
+                .doesNotContain("# Required Vocabulary")
+                .doesNotContain("# Forbidden Vocabulary");
     }
 
     @Test
@@ -154,6 +158,37 @@ class TurPersonaStaticPromptCacheTest {
         TurPersona p = persona("p-11", "x");
         assertThat(cache.composeStaticBlock(p))
                 .doesNotContain("\n\n----\n");
+    }
+
+    @Test
+    void includesPersonalityBlockForDeviatingTraits() {
+        // T717 — high openness + low agreeableness should render distinct guidance.
+        TurPersona p = persona("p-12", null);
+        p.setVerbosity(0); // suppress the style block so we isolate personality
+        p.setOpenness(90);
+        p.setAgreeableness(10);
+        String out = cache.composeStaticBlock(p);
+        assertThat(out)
+                .contains("# Personality")
+                .contains("intellectually curious")
+                .contains("push back readily");
+    }
+
+    @Test
+    void skipsPersonalityBlockForUnsetOrMidRangeTraits() {
+        // T717 — null traits and mid-band (34..66) values render nothing.
+        TurPersona p = persona("p-13", "instr");
+        p.setVerbosity(0);
+        p.setOpenness(50);
+        p.setConscientiousness(60);
+        // extraversion / agreeableness / neuroticism left null
+        assertThat(cache.composeStaticBlock(p)).doesNotContain("# Personality");
+    }
+
+    @Test
+    void skipsPersonalityBlockWhenNoTraitsSet() {
+        TurPersona p = persona("p-14", "instr");
+        assertThat(cache.composeStaticBlock(p)).doesNotContain("# Personality");
     }
 
     private static TurPersona persona(String id, String instruction) {

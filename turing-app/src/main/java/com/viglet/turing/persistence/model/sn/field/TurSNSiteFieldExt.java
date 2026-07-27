@@ -26,6 +26,8 @@ import java.io.Serializable;
 import java.util.HashSet;
 import java.util.Set;
 
+import org.hibernate.annotations.NotFound;
+import org.hibernate.annotations.NotFoundAction;
 import org.hibernate.annotations.OnDelete;
 import org.hibernate.annotations.OnDeleteAction;
 
@@ -33,7 +35,7 @@ import com.fasterxml.jackson.annotation.JsonBackReference;
 import com.viglet.turing.commons.se.field.TurSEFieldType;
 import com.viglet.turing.persistence.model.sn.TurSNSite;
 import com.viglet.turing.persistence.model.sn.TurSNSiteFacetRangeEnum;
-import com.viglet.turing.persistence.utils.TurAssignableUuidGenerator;
+import com.viglet.core.jpa.VigletAssignableUuidGenerator;
 import com.viglet.turing.sn.TurSNFieldType;
 import com.viglet.turing.sn.snapshot.TurSNSiteSnapshotEvictionListener;
 
@@ -72,7 +74,7 @@ public class TurSNSiteFieldExt implements Serializable {
     private static final long serialVersionUID = 1L;
 
     @Id
-    @TurAssignableUuidGenerator
+    @VigletAssignableUuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
     private String id;
     @Column(nullable = false)
@@ -131,8 +133,15 @@ public class TurSNSiteFieldExt implements Serializable {
     private String defaultValue;
 
     // bi-directional many-to-one association to TurSNSite
+    // @NotFound(IGNORE): tolerate orphaned rows whose sn_site_id points to a
+    // TurSNSite that was deleted without cascading its fields. Without this a
+    // single orphan makes findAll() throw ObjectNotFoundException, which crashes
+    // GraphQLConfig's dynamic-schema build at startup and takes the whole context
+    // down (the graphQlSource bean fails). The site is never read from here — the
+    // GraphQL schema builder only uses getName() — so resolving to null is safe.
     @ManyToOne
     @JoinColumn(name = "sn_site_id", nullable = false)
+    @NotFound(action = NotFoundAction.IGNORE)
     @JsonBackReference(value = "turSNSiteFieldExt-turSNSite")
     private TurSNSite turSNSite;
 

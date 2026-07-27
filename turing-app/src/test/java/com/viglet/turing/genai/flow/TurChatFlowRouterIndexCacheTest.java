@@ -40,7 +40,7 @@ import com.viglet.turing.service.chatslots.TurChatSlotEventBus;
  * <p>Three contracts to lock down:
  * <ul>
  *   <li>repeated calls for the same agent rebuild the Lucene index <em>once</em></li>
- *   <li>{@link TurChatFlowEngineService#evictRouterIndexes()} forces a rebuild on the next call</li>
+ *   <li>{@link TurChatFlowEngineService#evictFlowDerivedCaches()} forces a rebuild on the next call</li>
  *   <li>candidates excluded by the per-conversation eligibility mask never win,
  *       even when they would have been the top-scoring document in the bucket</li>
  * </ul>
@@ -68,6 +68,9 @@ class TurChatFlowRouterIndexCacheTest {
 
     @BeforeEach
     void setUp() {
+        // Real trigger router over the same repository mock — the engine
+        // delegates the procedural-routing API to it (S6539 split).
+        TurChatFlowTriggerRouter triggerRouter = new TurChatFlowTriggerRouter(chatFlowRepository);
         engine = new TurChatFlowEngineService(stateRepository, chatFlowRepository,
                 submissionRepository, chatAnalyticsService, slotEventBus,
                 org.mockito.Mockito.mock(
@@ -79,6 +82,8 @@ class TurChatFlowRouterIndexCacheTest {
                 org.mockito.Mockito.mock(
                         com.viglet.turing.genai.flow.routine.TurScheduleAgentNodeExecutor.class),
                 org.mockito.Mockito.mock(TurChatWebhookNodeExecutor.class),
+                org.mockito.Mockito.mock(TurHumanApprovalNodeExecutor.class),
+                triggerRouter,
                 List.<TurChatFlowGuardrailStrategy>of());
     }
 
@@ -112,7 +117,7 @@ class TurChatFlowRouterIndexCacheTest {
         engine.tryProceduralRoute("agent-1", candidates(refund, shipping), "refund");
         assertThat(engine.routerIndexCacheSize()).isEqualTo(1);
 
-        engine.evictRouterIndexes();
+        engine.evictFlowDerivedCaches();
         assertThat(engine.routerIndexCacheSize()).isZero();
 
         engine.tryProceduralRoute("agent-1", candidates(refund, shipping), "refund");

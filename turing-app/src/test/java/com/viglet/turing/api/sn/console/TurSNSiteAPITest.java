@@ -161,7 +161,7 @@ class TurSNSiteAPITest {
                 payload.setHl(1);
                 payload.setTurSNSiteGenAi(new TurSNSiteGenAi());
 
-                when(siteRepository.findByIdNoCache("site")).thenReturn(Optional.of(existing));
+                when(siteRepository.findByIdWithGenAi("site")).thenReturn(Optional.of(existing));
                 when(siteRepository.findByNameIgnoreCase("New")).thenReturn(Optional.empty());
 
                 TurSNSiteDto result = (TurSNSiteDto) api.turSNSiteUpdate("site", payload).getBody();
@@ -215,9 +215,12 @@ class TurSNSiteAPITest {
                 TurSEInstance payloadSe = new TurSEInstance();
                 payloadSe.setId("se-1");
                 payloadGenAi.setRagSeInstance(payloadSe);
+                // T383 — public-search ranking mode round-trips alongside the RAG flags.
+                payloadGenAi.setSnRankingMode(
+                                com.viglet.turing.persistence.model.sn.genai.TurSNRankingMode.HYBRID_RRF);
                 payload.setTurSNSiteGenAi(payloadGenAi);
 
-                when(siteRepository.findByIdNoCache("site")).thenReturn(Optional.of(existing));
+                when(siteRepository.findByIdWithGenAi("site")).thenReturn(Optional.of(existing));
                 when(siteRepository.findByNameIgnoreCase("X")).thenReturn(Optional.empty());
                 when(seRepo.findById("se-1")).thenReturn(Optional.of(seInstance));
 
@@ -228,6 +231,8 @@ class TurSNSiteAPITest {
                 assertThat(existingGenAi.getRagBm25Source())
                                 .isEqualTo(com.viglet.turing.persistence.model.rag.TurRagBm25Source.SE_INSTANCE);
                 assertThat(existingGenAi.getRagSeInstance()).isSameAs(seInstance);
+                assertThat(existingGenAi.getSnRankingMode())
+                                .isEqualTo(com.viglet.turing.persistence.model.sn.genai.TurSNRankingMode.HYBRID_RRF);
                 verify(genAiRepository).save(existingGenAi);
         }
 
@@ -245,7 +250,7 @@ class TurSNSiteAPITest {
                 instance.setEndpointUrl("http://localhost:8983/solr");
                 site.setTurSEInstance(instance);
 
-                when(siteRepository.findByIdNoCache("site")).thenReturn(Optional.of(site));
+                when(siteRepository.findById("site")).thenReturn(Optional.of(site));
 
                 boolean result = api.turSNSiteDelete("site");
 
@@ -282,7 +287,7 @@ class TurSNSiteAPITest {
                 site.getTurSNSiteMergeProviders().add(mergeProvider1);
                 site.getTurSNSiteMergeProviders().add(mergeProvider2);
 
-                when(siteRepository.findByIdNoCache("site")).thenReturn(Optional.of(site));
+                when(siteRepository.findById("site")).thenReturn(Optional.of(site));
 
                 boolean result = api.turSNSiteDelete("site");
 

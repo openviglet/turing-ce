@@ -11,7 +11,6 @@ package com.viglet.turing.service.chatslots;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -74,8 +73,8 @@ class TurPiiSlotServiceTest {
 
         service.encryptInPlace(vars);
 
-        assertThat(vars).containsEntry("name", "Alex");
-        assertThat(vars).containsEntry("pii_email", "pii_enc:v1:CIPHER");
+        assertThat(vars).containsEntry("name", "Alex")
+                .containsEntry("pii_email", "pii_enc:v1:CIPHER");
         verify(cryptoService, never()).encrypt("Alex");
     }
 
@@ -123,10 +122,10 @@ class TurPiiSlotServiceTest {
 
         service.decryptInPlace(vars);
 
-        assertThat(vars).containsEntry("name", "Alex");
-        assertThat(vars).containsEntry("pii_email", "alex@example.com");
-        assertThat(vars).containsEntry("pii_legacy", "stillPlain");
-        verify(cryptoService, times(1)).decrypt(eq("CIPHER"));
+        assertThat(vars).containsEntry("name", "Alex")
+                .containsEntry("pii_email", "alex@example.com")
+                .containsEntry("pii_legacy", "stillPlain");
+        verify(cryptoService, times(1)).decrypt("CIPHER");
     }
 
     @Test
@@ -151,9 +150,9 @@ class TurPiiSlotServiceTest {
 
         Map<String, String> redacted = TurPiiSlotService.redact(vars);
 
-        assertThat(redacted).containsEntry("name", "Alex");
-        assertThat(redacted).containsEntry("pii_email", "[redacted]");
-        assertThat(redacted).containsEntry("pii_cpf", ""); // empty stays empty
+        assertThat(redacted).containsEntry("name", "Alex")
+                .containsEntry("pii_email", "[redacted]")
+                .containsEntry("pii_cpf", ""); // empty stays empty
         // Input was not mutated.
         assertThat(vars).containsEntry("pii_email", "alex@example.com");
     }

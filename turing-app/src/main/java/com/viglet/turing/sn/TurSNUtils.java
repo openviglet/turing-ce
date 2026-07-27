@@ -249,6 +249,12 @@ public class TurSNUtils {
                         .source(getSourceFromDocument(turSEResultAttr))
                         .fields(addFieldsFromDocument(fieldExtMap, turSEResultAttr,
                                 turSEResultAttr.keySet()))
+                        // T389 — carry the hybrid pipeline's ranking explanation through
+                        // to the response (absent on the legacy lexical path).
+                        .rankingExplanation(result.getRankingExplanation())
+                        // T390 — carry the per-result duplicate cluster (absent unless the
+                        // site has MoreLikeThis enabled on a hybrid ranking mode).
+                        .duplicateCluster(result.getDuplicateCluster())
                         .build())
                 .orElse(TurSNSiteSearchDocumentBean.builder().build());
     }

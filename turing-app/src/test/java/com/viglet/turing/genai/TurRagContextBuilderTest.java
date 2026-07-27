@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.util.Optional;
@@ -15,6 +16,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullAndEmptySource;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -45,6 +48,10 @@ class TurRagContextBuilderTest {
     @Mock
     private TurLlmModelFactory llmModelFactory;
     @Mock
+    private com.viglet.turing.genai.provider.llm.TurLocalEmbeddingModelFactory localEmbeddingModelFactory;
+    @Mock
+    private com.viglet.turing.genai.provider.llm.TurHuggingFaceEmbeddingModelFactory huggingFaceEmbeddingModelFactory;
+    @Mock
     private TurGenAiStoreProviderFactory storeProviderFactory;
     @Mock
     private TurSecretCryptoService secretCryptoService;
@@ -52,6 +59,8 @@ class TurRagContextBuilderTest {
     private TurGlobalSettingsService globalSettingsService;
     @Mock
     private TurEmbeddingModelRepository embeddingModelRepository;
+    @Mock
+    private com.viglet.turing.persistence.repository.llm.TurLLMInstanceRepository instanceRepository;
     @Mock
     private TurStoreInstanceRepository storeInstanceRepository;
 
@@ -90,9 +99,11 @@ class TurRagContextBuilderTest {
                 .hasMessageContaining("has no LLM instance");
     }
 
-    @Test
-    void resolveEmbeddingModelShouldUseModelReferenceWhenPresent() {
-        embModel.setModelReference("custom-embedding-ref");
+    @ParameterizedTest(name = "modelReference=[{0}]")
+    @NullSource
+    @ValueSource(strings = {"custom-embedding-ref", ""})
+    void resolveEmbeddingModelShouldResolveRegardlessOfModelReference(String modelReference) {
+        embModel.setModelReference(modelReference);
 
         EmbeddingModel springEmb = mock(EmbeddingModel.class);
         when(secretCryptoService.decrypt("enc-key")).thenReturn("plain-key");
@@ -103,27 +114,22 @@ class TurRagContextBuilderTest {
     }
 
     @Test
-    void resolveEmbeddingModelShouldFallbackToLlmModelNameWhenNoReference() {
-        embModel.setModelReference(null);
+    void resolveEmbeddingModelShouldDelegateToLocalFactoryForTransformersLocal() {
+        TurEmbeddingModel local = new TurEmbeddingModel();
+        local.setModelName("all-MiniLM-L6-v2");
+        local.setProviderType("TRANSFORMERS_LOCAL");
+        local.setModelPath("https://example.test/model.onnx");
+        local.setTokenizerPath("https://example.test/tokenizer.json");
 
-        EmbeddingModel springEmb = mock(EmbeddingModel.class);
-        when(secretCryptoService.decrypt("enc-key")).thenReturn("plain-key");
-        when(llmModelFactory.createEmbeddingModel(any(TurLLMInstance.class), eq("plain-key"))).thenReturn(springEmb);
+        EmbeddingModel onnx = mock(EmbeddingModel.class);
+        when(localEmbeddingModelFactory.supports("TRANSFORMERS_LOCAL")).thenReturn(true);
+        when(localEmbeddingModelFactory.resolve(local)).thenReturn(onnx);
 
-        EmbeddingModel result = builder.resolveEmbeddingModel(embModel);
-        assertThat(result).isSameAs(springEmb);
-    }
+        EmbeddingModel result = builder.resolveEmbeddingModel(local);
 
-    @Test
-    void resolveEmbeddingModelShouldFallbackToLlmModelNameWhenReferenceIsEmpty() {
-        embModel.setModelReference("");
-
-        EmbeddingModel springEmb = mock(EmbeddingModel.class);
-        when(secretCryptoService.decrypt("enc-key")).thenReturn("plain-key");
-        when(llmModelFactory.createEmbeddingModel(any(TurLLMInstance.class), eq("plain-key"))).thenReturn(springEmb);
-
-        EmbeddingModel result = builder.resolveEmbeddingModel(embModel);
-        assertThat(result).isSameAs(springEmb);
+        // Local ONNX path is used — the cloud LLM factory is never consulted.
+        assertThat(result).isSameAs(onnx);
+        verifyNoInteractions(llmModelFactory);
     }
 
     @ParameterizedTest
@@ -340,16 +346,80 @@ class TurRagContextBuilderTest {
     }
 
     @Test
-    void buildTwoArgShouldDelegateToThreeArg() {
-        when(embeddingModelRepository.findById("emb-1")).thenReturn(Optional.empty());
-        Optional<TurRagContextBuilder.RagInfrastructure> result = builder.build("emb-1", "store-1");
+    void buildShouldReturnEmptyWhenBothIdsAreBlank() {
+        Optional<TurRagContextBuilder.RagInfrastructure> result = builder.build("", "");
         assertThat(result).isEmpty();
     }
 
     @Test
-    void buildShouldReturnEmptyWhenBothIdsAreBlank() {
-        Optional<TurRagContextBuilder.RagInfrastructure> result = builder.build("", "");
-        assertThat(result).isEmpty();
+    void reindexContextualShouldFallBackToVectorStoreAddForTextOnlyModel() {
+        EmbeddingModel textOnly = mock(EmbeddingModel.class);
+        VectorStore vectorStore = mock(VectorStore.class);
+        TurGenAiStoreProvider storeProvider = mock(TurGenAiStoreProvider.class);
+        var infra = new TurRagContextBuilder.RagInfrastructure(vectorStore, textOnly, storeProvider,
+                storeInstance, "cred", "coll");
+        var docs = java.util.List.of(
+                org.springframework.ai.document.Document.builder().id("c1").text("chunk one").build(),
+                org.springframework.ai.document.Document.builder().id("c2").text("chunk two").build());
+
+        boolean contextual = builder.reindexByMetadataContextual(infra, docs, "objectName", "doc.pdf");
+
+        assertThat(contextual).isFalse();
+        verify(storeProvider).deleteByMetadata(storeInstance, "cred", "coll", "objectName", "doc.pdf");
+        verify(vectorStore).add(docs);
+    }
+
+    @Test
+    void reindexContextualShouldEmbedChunksTogetherAndUpsertPrecomputed() {
+        EmbeddingModel contextualModel = mock(EmbeddingModel.class,
+                org.mockito.Mockito.withSettings().extraInterfaces(
+                        com.viglet.turing.genai.provider.llm.TurContextualEmbeddingModel.class));
+        var asContextual = (com.viglet.turing.genai.provider.llm.TurContextualEmbeddingModel) contextualModel;
+        when(asContextual.supportsContextualChunks()).thenReturn(true);
+        when(asContextual.embedDocumentChunks(any()))
+                .thenReturn(java.util.List.of(new float[] { 0.1f }, new float[] { 0.2f }));
+
+        VectorStore vectorStore = mock(VectorStore.class);
+        TurGenAiStoreProvider storeProvider = mock(TurGenAiStoreProvider.class);
+        var infra = new TurRagContextBuilder.RagInfrastructure(vectorStore, contextualModel, storeProvider,
+                storeInstance, "cred", "coll");
+        var docs = java.util.List.of(
+                org.springframework.ai.document.Document.builder().id("c1").text("chunk one").build(),
+                org.springframework.ai.document.Document.builder().id("c2").text("chunk two").build());
+
+        boolean contextual = builder.reindexByMetadataContextual(infra, docs, "objectName", "doc.pdf");
+
+        assertThat(contextual).isTrue();
+        verify(storeProvider).deleteByMetadata(storeInstance, "cred", "coll", "objectName", "doc.pdf");
+        verify(storeProvider).importChunks(eq(storeInstance), eq("cred"), eq("coll"), any(), eq(contextualModel));
+        // The per-chunk vector-store add() must NOT run on the contextual path.
+        org.mockito.Mockito.verify(vectorStore, org.mockito.Mockito.never())
+                .add(org.mockito.ArgumentMatchers.anyList());
+    }
+
+    @Test
+    void reindexContextualShouldFallBackWhenVectorCountMismatches() {
+        EmbeddingModel contextualModel = mock(EmbeddingModel.class,
+                org.mockito.Mockito.withSettings().extraInterfaces(
+                        com.viglet.turing.genai.provider.llm.TurContextualEmbeddingModel.class));
+        var asContextual = (com.viglet.turing.genai.provider.llm.TurContextualEmbeddingModel) contextualModel;
+        when(asContextual.supportsContextualChunks()).thenReturn(true);
+        // Only one vector for two chunks → mismatch → fall back.
+        when(asContextual.embedDocumentChunks(any()))
+                .thenReturn(java.util.List.of(new float[] { 0.1f }));
+
+        VectorStore vectorStore = mock(VectorStore.class);
+        TurGenAiStoreProvider storeProvider = mock(TurGenAiStoreProvider.class);
+        var infra = new TurRagContextBuilder.RagInfrastructure(vectorStore, contextualModel, storeProvider,
+                storeInstance, "cred", "coll");
+        var docs = java.util.List.of(
+                org.springframework.ai.document.Document.builder().id("c1").text("chunk one").build(),
+                org.springframework.ai.document.Document.builder().id("c2").text("chunk two").build());
+
+        boolean contextual = builder.reindexByMetadataContextual(infra, docs, "objectName", "doc.pdf");
+
+        assertThat(contextual).isFalse();
+        verify(vectorStore).add(docs);
     }
 
     // Helper interface for testing VectorStore that also implements InitializingBean

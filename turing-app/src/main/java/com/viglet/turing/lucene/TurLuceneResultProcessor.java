@@ -77,10 +77,13 @@ public class TurLuceneResultProcessor {
      * index segments; facet values are then counted directly from per-field
      * {@link SortedSetDocValues} without relying on FacetsConfig internals.
      */
-    public TurSEResults getResults(TurLuceneInstance instance, TurSNSite turSNSite,
-            Query query, TurSEParameters params, List<TurSNSiteFieldExt> facetFields,
+    public TurSEResults getResults(TurLuceneSearch search, List<TurSNSiteFieldExt> facetFields,
             List<TurSNSiteFieldExt> hlFields, org.apache.lucene.search.Sort sort,
             long startTime) {
+        TurLuceneInstance instance = search.instance();
+        TurSNSite turSNSite = search.turSNSite();
+        Query query = search.query();
+        TurSEParameters params = search.params();
         TurSEResults results = TurSEResults.builder().build();
         populateResultsParameters(params, results);
 
@@ -159,6 +162,7 @@ public class TurLuceneResultProcessor {
         String preTags = turSNSite.getHlPre() != null ? turSNSite.getHlPre() : "<em>";
         String postTags = turSNSite.getHlPost() != null ? turSNSite.getHlPost() : "</em>";
 
+        HlTagPair tags = new HlTagPair(preTags, postTags);
         try {
             UnifiedHighlighter highlighter = new UnifiedHighlighter.Builder(searcher, new StandardAnalyzer())
                     .build();
@@ -167,32 +171,46 @@ public class TurLuceneResultProcessor {
                 if (hlField.getType() == null || !HL_FIELD_TYPES.contains(hlField.getType())) {
                     continue;
                 }
-                String fieldName = hlField.getName();
-                try {
-                    String[] snippets = highlighter.highlight(fieldName, query, topDocs, 1);
-                    if (snippets == null) continue;
-                    for (int i = 0; i < snippets.length && i < topDocs.scoreDocs.length; i++) {
-                        if (snippets[i] == null) continue;
-                        // Replace default <b>/</b> tags with configured HL tags
-                        String highlighted = snippets[i]
-                                .replace("<b>", preTags)
-                                .replace("</b>", postTags);
-                        Document doc = searcher.storedFields().document(topDocs.scoreDocs[i].doc);
-                        String docId = doc.get(TurLuceneConstants.ID);
-                        if (docId != null) {
-                            hlByDoc.computeIfAbsent(docId, k -> new LinkedHashMap<>())
-                                    .put(fieldName, highlighted);
-                        }
-                    }
-                } catch (Exception e) {
-                    log.debug("Could not highlight field '{}': {}", fieldName, e.getMessage());
-                }
+                highlightField(highlighter, hlField.getName(), query, topDocs, searcher, hlByDoc, tags);
             }
         } catch (Exception e) {
             log.warn("Error building highlighting: {}", e.getMessage());
         }
 
         return hlByDoc;
+    }
+
+    /** Configured pre/post highlight tags. */
+    private record HlTagPair(String preTags, String postTags) {
+    }
+
+    /**
+     * Highlights one field across the hit docs, writing the rewritten snippet
+     * (default {@code <b>} tags swapped for the configured pair) under each
+     * doc id in {@code hlByDoc}. Per-field failures are logged and skipped.
+     */
+    private void highlightField(UnifiedHighlighter highlighter, String fieldName, Query query,
+            TopDocs topDocs, IndexSearcher searcher, Map<String, Map<String, String>> hlByDoc,
+            HlTagPair tags) {
+        try {
+            String[] snippets = highlighter.highlight(fieldName, query, topDocs, 1);
+            if (snippets == null) return;
+            for (int i = 0; i < snippets.length && i < topDocs.scoreDocs.length; i++) {
+                if (snippets[i] == null) continue;
+                // Replace default <b>/</b> tags with configured HL tags
+                String highlighted = snippets[i]
+                        .replace("<b>", tags.preTags())
+                        .replace("</b>", tags.postTags());
+                Document doc = searcher.storedFields().document(topDocs.scoreDocs[i].doc);
+                String docId = doc.get(TurLuceneConstants.ID);
+                if (docId != null) {
+                    hlByDoc.computeIfAbsent(docId, k -> new LinkedHashMap<>())
+                            .put(fieldName, highlighted);
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not highlight field '{}': {}", fieldName, e.getMessage());
+        }
     }
 
     static boolean isHL(TurSNSite turSNSite, List<TurSNSiteFieldExt> hlFields) {
@@ -206,14 +224,7 @@ public class TurLuceneResultProcessor {
     TurSEResult createTurSEResult(Document doc, float score,
             Map<String, String> docHL, List<TurSNSiteFieldExt> hlFields) {
         Map<String, Object> fields = new LinkedHashMap<>();
-        Map<String, TurSEFieldType> hlFieldTypes = new LinkedHashMap<>();
-        if (hlFields != null) {
-            for (TurSNSiteFieldExt f : hlFields) {
-                if (f.getType() != null) {
-                    hlFieldTypes.put(f.getName(), f.getType());
-                }
-            }
-        }
+        Map<String, TurSEFieldType> hlFieldTypes = buildHlFieldTypes(hlFields);
 
         for (IndexableField f : doc.getFields()) {
             String name = f.name();
@@ -228,19 +239,39 @@ public class TurLuceneResultProcessor {
                 newVal = docHL.get(name);
             }
 
-            Object existing = fields.get(name);
-            if (existing == null) {
-                fields.put(name, newVal);
-            } else if (existing instanceof List<?> list) {
-                List<Object> mutable = new ArrayList<>(list);
-                mutable.add(newVal);
-                fields.put(name, mutable);
-            } else {
-                fields.put(name, new ArrayList<>(List.of(existing, newVal)));
-            }
+            mergeFieldValue(fields, name, newVal);
         }
         fields.put(TurLuceneConstants.SCORE, score);
         return TurSEResult.builder().fields(fields).build();
+    }
+
+    private static Map<String, TurSEFieldType> buildHlFieldTypes(List<TurSNSiteFieldExt> hlFields) {
+        Map<String, TurSEFieldType> hlFieldTypes = new LinkedHashMap<>();
+        if (hlFields != null) {
+            for (TurSNSiteFieldExt f : hlFields) {
+                if (f.getType() != null) {
+                    hlFieldTypes.put(f.getName(), f.getType());
+                }
+            }
+        }
+        return hlFieldTypes;
+    }
+
+    /**
+     * Merges {@code newVal} into {@code fields} under {@code name}, promoting
+     * to a mutable list when the field already holds one or more values.
+     */
+    private static void mergeFieldValue(Map<String, Object> fields, String name, Object newVal) {
+        Object existing = fields.get(name);
+        if (existing == null) {
+            fields.put(name, newVal);
+        } else if (existing instanceof List<?> list) {
+            List<Object> mutable = new ArrayList<>(list);
+            mutable.add(newVal);
+            fields.put(name, mutable);
+        } else {
+            fields.put(name, new ArrayList<>(List.of(existing, newVal)));
+        }
     }
 
     private static boolean isHLAttribute(Map<String, TurSEFieldType> hlFieldTypes, String attribute) {

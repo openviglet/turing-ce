@@ -68,6 +68,12 @@ import com.viglet.turing.persistence.repository.agent.TurChatFlowRepository;
 @Service
 public class TurChatFlowLinterService {
 
+    // --- S1192: extracted duplicated literals ---
+    private static final String ERROR = "ERROR";
+    private static final String WARNING = "WARNING";
+    private static final String ITERATE_PLAN = "iteratePlan";
+
+
     /**
      * Soft cap on {@code aiInstruction} length. Above this the addendum
      * starts to dominate the system prompt and the LLM begins to ignore
@@ -119,7 +125,7 @@ public class TurChatFlowLinterService {
                     ? List.of(flow)
                     : chatFlowRepository.findByTurAIAgent_IdOrderByNameAsc(agentId);
             checkAiInstructionLength(graph, issues);
-            checkUnusedOutputVariables(flow, graph, agentFlows, issues);
+            checkUnusedOutputVariables(graph, agentFlows, issues);
             checkDeadEndNodes(graph, issues);
             checkBranchingEdgeLabels(graph, issues);
             checkFormFields(graph, agentId, issues);
@@ -139,8 +145,8 @@ public class TurChatFlowLinterService {
     }
 
     private static int priority(String severity) {
-        if ("ERROR".equals(severity)) return 0;
-        if ("WARNING".equals(severity)) return 1;
+        if (ERROR.equals(severity)) return 0;
+        if (WARNING.equals(severity)) return 1;
         return 2;
     }
 
@@ -150,16 +156,18 @@ public class TurChatFlowLinterService {
             String instr = node.aiInstruction();
             if (instr != null && instr.length() > AI_INSTRUCTION_LIMIT) {
                 out.add(new TurChatFlowLintIssueDto(
-                        node.id(), null, "WARNING", "ai_instruction_too_long",
+                        node.id(), null, WARNING, "ai_instruction_too_long",
                         "aiInstruction is " + instr.length() + " chars (soft limit "
                                 + AI_INSTRUCTION_LIMIT + ")",
                         "Tighten the instruction or split the node — verbose addenda inflate"
-                                + " token cost and dilute the model's attention."));
+                                + " token cost and dilute the model's attention.",
+                        java.util.Map.of("length", String.valueOf(instr.length()),
+                                "limit", String.valueOf(AI_INSTRUCTION_LIMIT))));
             }
         }
     }
 
-    private static void checkUnusedOutputVariables(TurChatFlow currentFlow, ChatFlowGraph graph,
+    private static void checkUnusedOutputVariables(ChatFlowGraph graph,
             List<TurChatFlow> agentFlows, List<TurChatFlowLintIssueDto> out) {
         // Build the set of every slot name referenced anywhere on the agent
         // — by any flow's interpolation tokens, switch variables, slot
@@ -172,67 +180,72 @@ public class TurChatFlowLinterService {
                 continue;
             }
             String slot = node.outputVariable();
-            if (slot == null || slot.isBlank()) continue;
-            if (referenced.contains(slot)) continue;
-            out.add(new TurChatFlowLintIssueDto(
-                    node.id(), null, "WARNING", "unused_output_variable",
-                    "Slot '" + slot + "' is captured here but never read downstream",
-                    "Either consume it (use {{" + slot + "}} in another node, drive a switch on it,"
-                            + " or declare it as an inheritance source on another flow) or remove the"
-                            + " outputVariable."));
+            if (slot != null && !slot.isBlank() && !referenced.contains(slot)) {
+                out.add(new TurChatFlowLintIssueDto(
+                        node.id(), null, WARNING, "unused_output_variable",
+                        "Slot '" + slot + "' is captured here but never read downstream",
+                        "Either consume it (use {{" + slot + "}} in another node, drive a switch on it,"
+                                + " or declare it as an inheritance source on another flow) or remove the"
+                                + " outputVariable.",
+                        java.util.Map.of("slot", slot)));
+            }
         }
-        if (currentFlow == null) return; // Defensive — never null in practice but the test exercises this.
     }
 
     private static Set<String> collectReferencedSlots(List<TurChatFlow> flows) {
         Set<String> out = new HashSet<>();
         for (TurChatFlow flow : flows) {
             // Interpolation in any text field: aiInstruction, slotValue, label.
-            Optional<ChatFlowGraph> graphOpt = TurChatFlowLinterService.staticParse(flow);
-            if (graphOpt.isPresent()) {
-                ChatFlowGraph graph = graphOpt.get();
-                for (ChatFlowNode node : graph.nodes()) {
-                    collectInterpolated(out, node.aiInstruction());
-                    collectInterpolated(out, node.slotValue());
-                    collectInterpolated(out, node.label());
-                    if (node.switchVariable() != null && !node.switchVariable().isBlank()) {
-                        out.add(node.switchVariable().trim());
-                    }
-                    if ("slot".equals(node.type()) && node.slotName() != null
-                            && !node.slotName().isBlank()) {
-                        out.add(node.slotName().trim());
-                    }
-                    if ("writeSlot".equals(node.type()) && node.outputVariable() != null
-                            && !node.outputVariable().isBlank()) {
-                        // writeSlot's outputVariable is the destination — but the value field can
-                        // reference others. Both directions count as references.
-                        out.add(node.outputVariable().trim());
-                    }
-                    collectInterpolated(out, node.validationRule());
-                    collectInterpolated(out, node.conditionExpression());
-                }
-            }
+            TurChatFlowLinterService.staticParse(flow).ifPresent(graph -> collectNodeSlots(out, graph));
             // Slot inheritance: sources declared by this flow count as
             // downstream readers of upstream slots.
-            String mapping = flow.getSlotInheritanceJson();
-            if (mapping != null && !mapping.isBlank()) {
-                Matcher m = SLOT_REFERENCE.matcher(mapping);
-                while (m.find()) {
-                    out.add(m.group(1));
-                }
-                // Quick-and-cheap: also pick string literals on the right-
-                // hand side of a JSON object via a regex; the linter doesn't
-                // need to formally parse the mapping for the unused-slot
-                // detector (false-positive avoidance), and unrelated tokens
-                // don't typically match slot names.
-                Matcher q = Pattern.compile("\"([\\w.-]+)\"\\s*:\\s*\"([\\w.-]+)\"")
-                        .matcher(mapping);
-                while (q.find()) {
-                    out.add(q.group(2));
-                }
-            }
+            collectInheritedSlots(out, flow.getSlotInheritanceJson());
         }
         return out;
+    }
+
+    /** Collects every slot referenced or written by the graph's nodes into {@code out}. */
+    private static void collectNodeSlots(Set<String> out, ChatFlowGraph graph) {
+        for (ChatFlowNode node : graph.nodes()) {
+            collectInterpolated(out, node.aiInstruction());
+            collectInterpolated(out, node.slotValue());
+            collectInterpolated(out, node.label());
+            if (node.switchVariable() != null && !node.switchVariable().isBlank()) {
+                out.add(node.switchVariable().trim());
+            }
+            if ("slot".equals(node.type()) && node.slotName() != null
+                    && !node.slotName().isBlank()) {
+                out.add(node.slotName().trim());
+            }
+            if ("writeSlot".equals(node.type()) && node.outputVariable() != null
+                    && !node.outputVariable().isBlank()) {
+                // writeSlot's outputVariable is the destination — but the value field can
+                // reference others. Both directions count as references.
+                out.add(node.outputVariable().trim());
+            }
+            collectInterpolated(out, node.validationRule());
+            collectInterpolated(out, node.conditionExpression());
+        }
+    }
+
+    /** Collects slot names referenced by a flow's slot-inheritance mapping JSON into {@code out}. */
+    private static void collectInheritedSlots(Set<String> out, String mapping) {
+        if (mapping == null || mapping.isBlank()) {
+            return;
+        }
+        Matcher m = SLOT_REFERENCE.matcher(mapping);
+        while (m.find()) {
+            out.add(m.group(1));
+        }
+        // Quick-and-cheap: also pick string literals on the right-hand side of a
+        // JSON object via a regex; the linter doesn't need to formally parse the
+        // mapping for the unused-slot detector (false-positive avoidance), and
+        // unrelated tokens don't typically match slot names.
+        Matcher q = Pattern.compile("\"([\\w.-]+)\"\\s*:\\s*\"([\\w.-]+)\"")
+                .matcher(mapping);
+        while (q.find()) {
+            out.add(q.group(2));
+        }
     }
 
     private static void collectInterpolated(Set<String> out, String text) {
@@ -250,10 +263,11 @@ public class TurChatFlowLinterService {
             if (edge.source() != null) sources.add(edge.source());
         }
         for (ChatFlowNode node : graph.nodes()) {
-            if ("end".equals(node.type())) continue;
-            if (sources.contains(node.id())) continue;
+            if ("end".equals(node.type()) || sources.contains(node.id())) {
+                continue;
+            }
             out.add(new TurChatFlowLintIssueDto(
-                    node.id(), null, "ERROR", "dead_end_node",
+                    node.id(), null, ERROR, "dead_end_node",
                     "Node has no outgoing edge — the conversation stalls when it reaches here",
                     "Wire an edge to the next node, or change the type to 'end' if this is a"
                             + " legitimate terminal."));
@@ -280,10 +294,11 @@ public class TurChatFlowLinterService {
             boolean missingLabel = edge.label() == null || edge.label().isBlank();
             if (missingHandle && missingLabel) {
                 out.add(new TurChatFlowLintIssueDto(
-                        edge.source(), edge.id(), "WARNING", "edge_without_label",
+                        edge.source(), edge.id(), WARNING, "edge_without_label",
                         "Edge from " + type + " node has no sourceHandle and no label",
                         "Pick which branch this edge represents ('yes'/'no' for condition, an option"
-                                + " id for switch) — the runtime cannot disambiguate without one."));
+                                + " id for switch) — the runtime cannot disambiguate without one.",
+                        java.util.Map.of("type", type)));
             }
         }
     }
@@ -304,53 +319,74 @@ public class TurChatFlowLinterService {
      */
     private void checkFormFields(ChatFlowGraph graph, String agentId,
             List<TurChatFlowLintIssueDto> out) {
+        List<ChatFlowNode> formNodes = collectFormNodes(graph);
+        if (formNodes.isEmpty()) {
+            // No native forms on this flow — skip the slot-catalog lookup.
+            return;
+        }
+        Set<String> declaredSlots = loadDeclaredSlots(agentId);
+        for (ChatFlowNode node : formNodes) {
+            Set<String> seen = new HashSet<>();
+            for (ChatFlowNode.FormField field : node.formFields()) {
+                lintFormField(node, field, seen, declaredSlots, out);
+            }
+        }
+    }
+
+    /** Collects the flow's native formCapture nodes that declare at least one field. */
+    private List<ChatFlowNode> collectFormNodes(ChatFlowGraph graph) {
         List<ChatFlowNode> formNodes = new ArrayList<>();
         for (ChatFlowNode node : graph.nodes()) {
             if ("formCapture".equals(node.type()) && !node.formFields().isEmpty()) {
                 formNodes.add(node);
             }
         }
-        if (formNodes.isEmpty()) {
-            // No native forms on this flow — skip the slot-catalog lookup.
+        return formNodes;
+    }
+
+    /** Loads the agent's declared slot names, or null when no agent id resolves a catalog. */
+    @SuppressWarnings("java:S1168") // null is a "no catalog resolved" sentinel; the caller skips the declared-slot check on null, an empty set would flag every slot as undeclared.
+    private Set<String> loadDeclaredSlots(String agentId) {
+        if (agentId == null || agentId.isBlank()) {
+            return null;
+        }
+        Set<String> declaredSlots = new HashSet<>();
+        for (TurAIAgentSlot slot : slotRepository.findByTurAIAgent_IdOrderByNameAsc(agentId)) {
+            if (slot.getName() != null && !slot.getName().isBlank()) {
+                declaredSlots.add(slot.getName().trim());
+            }
+        }
+        return declaredSlots;
+    }
+
+    /** Lints one form field: blank name (error), duplicate slot, or undeclared slot (warnings). */
+    private void lintFormField(ChatFlowNode node, ChatFlowNode.FormField field, Set<String> seen,
+            Set<String> declaredSlots, List<TurChatFlowLintIssueDto> out) {
+        String name = field == null ? null : field.name();
+        if (name == null || name.isBlank()) {
+            out.add(new TurChatFlowLintIssueDto(node.id(), null, ERROR,
+                    "form_field_blank_name",
+                    "A form field has no slot name — its value cannot be captured",
+                    "Pick a declared slot for every field on the form."));
             return;
         }
-        Set<String> declaredSlots = null;
-        if (agentId != null && !agentId.isBlank()) {
-            declaredSlots = new HashSet<>();
-            for (TurAIAgentSlot slot : slotRepository.findByTurAIAgent_IdOrderByNameAsc(agentId)) {
-                if (slot.getName() != null && !slot.getName().isBlank()) {
-                    declaredSlots.add(slot.getName().trim());
-                }
-            }
+        String trimmed = name.trim();
+        if (!seen.add(trimmed)) {
+            out.add(new TurChatFlowLintIssueDto(node.id(), null, WARNING,
+                    "form_field_duplicate_name",
+                    "Two form fields write the same slot '" + trimmed
+                            + "' — the later value wins",
+                    "Give each field its own slot, or remove the duplicate field.",
+                    java.util.Map.of("slot", trimmed)));
         }
-        for (ChatFlowNode node : formNodes) {
-            Set<String> seen = new HashSet<>();
-            for (ChatFlowNode.FormField field : node.formFields()) {
-                String name = field == null ? null : field.name();
-                if (name == null || name.isBlank()) {
-                    out.add(new TurChatFlowLintIssueDto(node.id(), null, "ERROR",
-                            "form_field_blank_name",
-                            "A form field has no slot name — its value cannot be captured",
-                            "Pick a declared slot for every field on the form."));
-                    continue;
-                }
-                String trimmed = name.trim();
-                if (!seen.add(trimmed)) {
-                    out.add(new TurChatFlowLintIssueDto(node.id(), null, "WARNING",
-                            "form_field_duplicate_name",
-                            "Two form fields write the same slot '" + trimmed
-                                    + "' — the later value wins",
-                            "Give each field its own slot, or remove the duplicate field."));
-                }
-                if (declaredSlots != null && !declaredSlots.contains(trimmed)) {
-                    out.add(new TurChatFlowLintIssueDto(node.id(), null, "WARNING",
-                            "form_field_unknown_slot",
-                            "Form field writes slot '" + trimmed
-                                    + "' which is not declared on the agent",
-                            "Declare the slot in the agent's slot catalog so the value lands in the"
-                                    + " typed schema and is readable downstream."));
-                }
-            }
+        if (declaredSlots != null && !declaredSlots.contains(trimmed)) {
+            out.add(new TurChatFlowLintIssueDto(node.id(), null, WARNING,
+                    "form_field_unknown_slot",
+                    "Form field writes slot '" + trimmed
+                            + "' which is not declared on the agent",
+                    "Declare the slot in the agent's slot catalog so the value lands in the"
+                            + " typed schema and is readable downstream.",
+                    java.util.Map.of("slot", trimmed)));
         }
     }
 
@@ -371,22 +407,50 @@ public class TurChatFlowLinterService {
      */
     private static void checkPlanningNodes(ChatFlowGraph graph,
             List<TurChatFlowLintIssueDto> out) {
-        boolean hasPlanningNodes = false;
-        for (ChatFlowNode node : graph.nodes()) {
-            if ("planningStep".equals(node.type()) || "iteratePlan".equals(node.type())) {
-                hasPlanningNodes = true;
-                break;
-            }
-        }
-        if (!hasPlanningNodes) {
+        if (!hasPlanningNodes(graph)) {
             return;
         }
         // Slots consumed as a plan: every iteratePlan's plan slot, plus any
         // {{slot}} interpolation anywhere in the graph (a planningStep whose
         // plan an author renders via {{__plan}} counts as consumed too).
+        Set<String> consumed = collectConsumedPlanSlots(graph);
+        for (ChatFlowNode node : graph.nodes()) {
+            if ("planningStep".equals(node.type()) && !consumed.contains(planSlotName(node))) {
+                out.add(new TurChatFlowLintIssueDto(
+                        node.id(), null, WARNING, "planning_step_unused_plan",
+                        "Plan slot '" + planSlotName(node) + "' is generated here but never iterated"
+                                + " or read downstream",
+                        "Add an iteratePlan node reading this slot, or render it with {{"
+                                + planSlotName(node) + "}} — otherwise the planning LLM call is wasted.",
+                        java.util.Map.of("slot", planSlotName(node))));
+            }
+            if (ITERATE_PLAN.equals(node.type())
+                    && (node.subFlowId() == null || node.subFlowId().isBlank())) {
+                out.add(new TurChatFlowLintIssueDto(
+                        node.id(), null, WARNING, "iterate_plan_no_body",
+                        "iteratePlan has no body sub-flow — it will mark every plan item done"
+                                + " without executing anything",
+                        "Set the node's sub-flow (subFlowId) to the flow that should run once per"
+                                + " plan item."));
+            }
+        }
+    }
+
+    /** True when the graph contains at least one planningStep or iteratePlan node. */
+    private static boolean hasPlanningNodes(ChatFlowGraph graph) {
+        for (ChatFlowNode node : graph.nodes()) {
+            if ("planningStep".equals(node.type()) || ITERATE_PLAN.equals(node.type())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Plan slots treated as consumed: every iteratePlan's slot plus any {@code {{slot}}} interpolation. */
+    private static Set<String> collectConsumedPlanSlots(ChatFlowGraph graph) {
         Set<String> consumed = new HashSet<>();
         for (ChatFlowNode node : graph.nodes()) {
-            if ("iteratePlan".equals(node.type())) {
+            if (ITERATE_PLAN.equals(node.type())) {
                 consumed.add(planSlotName(node));
             }
             collectInterpolated(consumed, node.aiInstruction());
@@ -395,25 +459,7 @@ public class TurChatFlowLinterService {
             collectInterpolated(consumed, node.validationRule());
             collectInterpolated(consumed, node.conditionExpression());
         }
-        for (ChatFlowNode node : graph.nodes()) {
-            if ("planningStep".equals(node.type()) && !consumed.contains(planSlotName(node))) {
-                out.add(new TurChatFlowLintIssueDto(
-                        node.id(), null, "WARNING", "planning_step_unused_plan",
-                        "Plan slot '" + planSlotName(node) + "' is generated here but never iterated"
-                                + " or read downstream",
-                        "Add an iteratePlan node reading this slot, or render it with {{"
-                                + planSlotName(node) + "}} — otherwise the planning LLM call is wasted."));
-            }
-            if ("iteratePlan".equals(node.type())
-                    && (node.subFlowId() == null || node.subFlowId().isBlank())) {
-                out.add(new TurChatFlowLintIssueDto(
-                        node.id(), null, "WARNING", "iterate_plan_no_body",
-                        "iteratePlan has no body sub-flow — it will mark every plan item done"
-                                + " without executing anything",
-                        "Set the node's sub-flow (subFlowId) to the flow that should run once per"
-                                + " plan item."));
-            }
-        }
+        return consumed;
     }
 
     /** Plan slot an iteratePlan/planningStep node operates on (outputVariable, default {@code __plan}). */
@@ -430,12 +476,15 @@ public class TurChatFlowLinterService {
                     && (flow.getId().equals(c.flowAId()) || flow.getId().equals(c.flowBId()));
             if (!involvesThisFlow) continue;
             String other = flow.getId().equals(c.flowAId()) ? c.flowBName() : c.flowAName();
-            String severity = "HIGH".equals(c.severity()) ? "ERROR" : "WARNING";
+            String severity = "HIGH".equals(c.severity()) ? ERROR : WARNING;
+            long pct = Math.round(c.similarity() * 100);
             out.add(new TurChatFlowLintIssueDto(
                     null, null, severity, "trigger_conflict",
                     "Trigger description overlaps with flow '" + other + "' ("
-                            + Math.round(c.similarity() * 100) + "% Jaccard)",
-                    c.suggestion()));
+                            + pct + "% Jaccard)",
+                    c.suggestion(),
+                    java.util.Map.of("other", other == null ? "" : other,
+                            "pct", String.valueOf(pct))));
         }
     }
 

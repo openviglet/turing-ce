@@ -9,11 +9,25 @@ import {
   type ChatMessage as TuringChatMessage,
 } from "@viglet/turing-react-sdk"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import {
+  fetchPreflightCost,
+  type TurPreflightQuote,
+} from "@/services/agent/agent-preflight-cost.service"
 import type { TurAIAgent } from "@/models/agent/ai-agent.model"
 import type { TurChatFlow } from "@/models/agent/chat-flow.model"
 import type { TurSkillSummary } from "@/models/skill/skill.model"
-import { estimateTokens, toAdminMessages } from "../chat.types"
+import { TurChatFeedbackService } from "@/services/agent/chat-feedback.service"
+import { TurChatRephraseService } from "@/services/agent/chat-rephrase.service"
+import { estimateTokens, toAdminMessages, type ChatMessage } from "../chat.types"
 import { ChatEmptyState } from "./chat-empty-state"
 import { ChatInput } from "./chat-input"
 import { ChatMessageList } from "./chat-message-list"
@@ -32,13 +46,31 @@ interface DisplayInstance {
   turLLMVendor?: { id: string } | null
 }
 
+/** Picker shape for the bottom-bar model selector — vendor + model, so the
+ *  option reads e.g. "ANTHROPIC · claude-haiku-4-5-20251001". */
+interface ModelPickerInstance {
+  id: string
+  turLLMVendor?: { id: string } | null
+  modelName?: string
+}
+
+/** Format one instance as "VENDOR · modelName" (same text the old label showed). */
+function formatModelOption(instance: ModelPickerInstance): string {
+  return `${instance.turLLMVendor?.id ?? ""} · ${instance.modelName ?? ""}`
+}
+
 interface AgentChatTabProps {
   agent: TurAIAgent
   /** Resolved LLM for this tab — guaranteed valid for the agent by the parent. */
   llmInstanceId: string
   selectedInstance?: DisplayInstance
-  modelLabel: string
   contextWindow: number
+  // ── Model selector (moved from the header into the composer bar) ──
+  /** Instances the active agent allows, rendered as "vendor · model" options. */
+  llmInstances?: ModelPickerInstance[]
+  /** Currently selected LLM instance id. */
+  selectedLlmId?: string
+  onModelChange?: (id: string) => void
   /** Controlled backend conversation id (== the host's IndexedDB session id). */
   conversationId?: string
   /** Seed transcript (restored session / post-compaction summary), SDK shape. */
@@ -94,7 +126,7 @@ export function AgentNoLlmFallback({
         />
       </div>
       <div className="shrink-0 border-t bg-background">
-        <div className="max-w-3xl mx-auto px-4 py-4">
+        <div className="max-w-5xl mx-auto px-4 py-4">
           <ChatInput
             value=""
             onChange={() => {}}
@@ -127,8 +159,10 @@ export function AgentChatTab({
   agent,
   llmInstanceId,
   selectedInstance,
-  modelLabel,
   contextWindow,
+  llmInstances = [],
+  selectedLlmId = "",
+  onModelChange,
   conversationId,
   initialMessages,
   flowId,
@@ -195,12 +229,37 @@ export function AgentChatTab({
     }
   }, [status, onResponseComplete])
 
+  // T162 / §X.8.g — pre-flight cost gate. Holds the pending text + quote while
+  // the user confirms a turn projected to breach the agent's per-turn soft cap.
+  const [costGate, setCostGate] = useState<{ text: string; quote: TurPreflightQuote } | null>(null)
+
+  const dispatchSend = useCallback(
+    (text: string) => {
+      setInput("")
+      void send(text)
+    },
+    [send],
+  )
+
   const handleSend = useCallback(() => {
     const text = input.trim()
     if (!text || isStreaming || !llmInstanceId) return
-    setInput("")
-    void send(text)
-  }, [input, isStreaming, llmInstanceId, send])
+    // Quote first; only gate when the projected cost breaches the soft cap.
+    void fetchPreflightCost(agent.id, text).then((quote) => {
+      if (quote.enabled && quote.overSoftCap) {
+        setCostGate({ text, quote })
+      } else {
+        dispatchSend(text)
+      }
+    })
+  }, [input, isStreaming, llmInstanceId, agent.id, dispatchSend])
+
+  const confirmCostGate = useCallback(() => {
+    if (costGate) {
+      dispatchSend(costGate.text)
+      setCostGate(null)
+    }
+  }, [costGate, dispatchSend])
 
   const handleOptionClick = useCallback(
     (label: string) => {
@@ -232,7 +291,74 @@ export function AgentChatTab({
     }
   }, [resetFlow, t])
 
-  const adminMessages = useMemo(() => toAdminMessages(messages), [messages])
+  // F.10 / T172 — local presentational overrides for answers the operator
+  // asked to rephrase (keyed by message id). Kept out of the SDK-managed
+  // transcript so it never affects what's sent on the next turn.
+  const [rephrasedById, setRephrasedById] = useState<Record<string, string>>({})
+  const adminMessages = useMemo(
+    () =>
+      toAdminMessages(messages).map((m) =>
+        rephrasedById[m.id] ? { ...m, content: rephrasedById[m.id] } : m,
+      ),
+    [messages, rephrasedById],
+  )
+
+  // F.9 / T170 — record an operator thumb-up/down as a DPO preference signal.
+  // The rated answer's prompt is the nearest preceding user turn. Direct service
+  // call (this component isn't React-Query-wrapped — same pattern as preflight cost).
+  const handleFeedback = useCallback(
+    (message: ChatMessage, rating: "UP" | "DOWN") => {
+      const idx = adminMessages.findIndex((m) => m.id === message.id)
+      let prompt = ""
+      for (let i = idx - 1; i >= 0; i--) {
+        if (adminMessages[i].role === "user") {
+          prompt = adminMessages[i].content
+          break
+        }
+      }
+      if (!prompt) return
+      new TurChatFeedbackService()
+        .record(agent.id, { conversationId, prompt, answer: message.content, rating })
+        .then(() => toast.success(t("chat.feedback.thanks", { defaultValue: "Thanks for the feedback" })))
+        .catch(() => toast.error(t("chat.feedback.failed", { defaultValue: "Could not save feedback" })))
+    },
+    [adminMessages, agent.id, conversationId, t],
+  )
+
+  // F.10 / T172 — rewrite an assistant answer in place (shorter/…). Resolves the
+  // prompt as the nearest preceding user turn, asks the backend (Predicted
+  // Outputs fast-path when the agent opted in), and applies the rewrite as a
+  // local override on that message.
+  const handleRephrase = useCallback(
+    async (message: ChatMessage, style: string) => {
+      const idx = adminMessages.findIndex((m) => m.id === message.id)
+      let prompt = ""
+      for (let i = idx - 1; i >= 0; i--) {
+        if (adminMessages[i].role === "user") {
+          prompt = adminMessages[i].content
+          break
+        }
+      }
+      try {
+        const result = await new TurChatRephraseService().rephrase(agent.id, {
+          conversationId,
+          llmInstanceId,
+          prompt,
+          answer: message.content,
+          style,
+        })
+        if (result.success && result.rephrased) {
+          setRephrasedById((prev) => ({ ...prev, [message.id]: result.rephrased as string }))
+        } else {
+          toast.error(result.error ?? t("chat.rephrase.failed", { defaultValue: "Could not rephrase" }))
+        }
+      } catch {
+        toast.error(t("chat.rephrase.failed", { defaultValue: "Could not rephrase" }))
+      }
+    },
+    [adminMessages, agent.id, conversationId, llmInstanceId, t],
+  )
+
   const tokens = useMemo(
     () => estimateTokens(messages.map((m) => m.content).join("")),
     [messages],
@@ -258,11 +384,13 @@ export function AgentChatTab({
             assistantIcon={agent.icon}
             endRef={endRef}
             onOptionClick={handleOptionClick}
+            onFeedback={handleFeedback}
+            onRephrase={handleRephrase}
           />
         )}
       </div>
       <div className="shrink-0 border-t bg-background">
-        <div className="max-w-3xl mx-auto px-4 py-4">
+        <div className="max-w-5xl mx-auto px-4 py-4">
           {routineWaiting.waiting && (
             <div className="mb-2 flex items-center gap-2 rounded-md border border-lime-500/40 bg-lime-500/10 px-3 py-2 text-xs text-lime-900 dark:text-lime-100">
               <IconLoader2 className="size-3.5 animate-spin" />
@@ -290,68 +418,110 @@ export function AgentChatTab({
             }
             accentColor="violet"
           />
-          <div className="flex items-center justify-between mt-2 gap-4">
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="text-xs text-muted-foreground shrink-0">{modelLabel}</span>
-              {activeFlows.length > 0 && (
-                <>
-                  <Select value={selectedFlowId} onValueChange={onFlowChange}>
-                    <SelectTrigger className="h-7 text-xs w-44">
-                      <SelectValue placeholder={t("chatFlow.selector.placeholder")} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={FLOW_AUTO}>{t("chatFlow.selector.auto")}</SelectItem>
-                      {activeFlows.map((flow) => (
-                        <SelectItem key={flow.id} value={flow.id ?? ""}>
-                          {flow.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  {canResetFlow && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 shrink-0"
-                      title={t("chatFlow.reset.label")}
-                      aria-label={t("chatFlow.reset.label")}
-                      onClick={handleResetFlow}
-                    >
-                      <IconRefresh className="size-3.5" />
-                    </Button>
-                  )}
-                </>
-              )}
-              {skillModeEnabled && (
-                <Select value={selectedSkillId} onValueChange={onSkillChange ?? (() => {})}>
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-2 mt-2">
+            {/* Model — vendor · model, moved out of the header. */}
+            <Select value={selectedLlmId} onValueChange={onModelChange}>
+              <SelectTrigger className="h-7 text-xs w-auto min-w-52 max-w-full gap-1.5">
+                <SelectValue placeholder={t("chat.selectModel")} />
+              </SelectTrigger>
+              <SelectContent>
+                {llmInstances.map((instance) => (
+                  <SelectItem key={instance.id} value={instance.id}>
+                    {formatModelOption(instance)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {activeFlows.length > 0 && (
+              <div className="flex items-center gap-1.5">
+                <Select value={selectedFlowId} onValueChange={onFlowChange}>
                   <SelectTrigger className="h-7 text-xs w-44">
-                    <SelectValue placeholder={t("chat.skill.selector.placeholder")} />
+                    <SelectValue placeholder={t("chatFlow.selector.placeholder")} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={SKILL_NONE}>{t("chat.skill.selector.auto")}</SelectItem>
-                    {skills.map((skill) => (
-                      <SelectItem key={skill.id} value={skill.id}>
-                        {skill.name}
+                    <SelectItem value={FLOW_AUTO}>{t("chatFlow.selector.auto")}</SelectItem>
+                    {activeFlows.map((flow) => (
+                      <SelectItem key={flow.id} value={flow.id ?? ""}>
+                        {flow.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-              )}
-            </div>
+                {canResetFlow && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 shrink-0"
+                    title={t("chatFlow.reset.label")}
+                    aria-label={t("chatFlow.reset.label")}
+                    onClick={handleResetFlow}
+                  >
+                    <IconRefresh className="size-3.5" />
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {skillModeEnabled && (
+              <Select value={selectedSkillId} onValueChange={onSkillChange ?? (() => {})}>
+                <SelectTrigger className="h-7 text-xs w-44">
+                  <SelectValue placeholder={t("chat.skill.selector.placeholder")} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={SKILL_NONE}>{t("chat.skill.selector.auto")}</SelectItem>
+                  {skills.map((skill) => (
+                    <SelectItem key={skill.id} value={skill.id}>
+                      {skill.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+
             {messages.length > 0 && (
-              <ContextBar
-                tokens={tokens}
-                percentage={percentage}
-                contextWindow={contextWindow}
-                compacting={compacting}
-                canCompact={canCompact}
-                onCompact={() => onCompactRequested(messages)}
-              />
+              <div className="ml-auto">
+                <ContextBar
+                  tokens={tokens}
+                  percentage={percentage}
+                  contextWindow={contextWindow}
+                  compacting={compacting}
+                  canCompact={canCompact}
+                  onCompact={() => onCompactRequested(messages)}
+                />
+              </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* T162 / §X.8.g — pre-flight cost confirmation gate. */}
+      <Dialog open={costGate !== null} onOpenChange={(open) => !open && setCostGate(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("chat.costGate.title", { defaultValue: "Confirm turn cost" })}</DialogTitle>
+            <DialogDescription>
+              {t("chat.costGate.body", {
+                defaultValue:
+                  "This turn is projected to cost about ${{cost}} ({{tokens}} input tokens){{approx}}, above the {{cap}} per-turn limit. Send anyway?",
+                cost: costGate ? costGate.quote.estimatedCostUsd.toFixed(2) : "0.00",
+                tokens: costGate ? costGate.quote.inputTokens : 0,
+                approx: costGate && !costGate.quote.exact ? " (estimated)" : "",
+                cap: costGate?.quote.softCapUsd != null ? `$${costGate.quote.softCapUsd.toFixed(2)}` : "",
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCostGate(null)}>
+              {t("common.cancel", { defaultValue: "Cancel" })}
+            </Button>
+            <Button onClick={confirmCostGate}>
+              {t("chat.costGate.confirm", { defaultValue: "Send anyway" })}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

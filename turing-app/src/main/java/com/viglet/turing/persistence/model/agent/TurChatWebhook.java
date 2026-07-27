@@ -12,8 +12,9 @@ package com.viglet.turing.persistence.model.agent;
 import java.io.Serial;
 import java.io.Serializable;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
-import com.viglet.turing.persistence.utils.TurAssignableUuidGenerator;
+import com.viglet.core.jpa.VigletAssignableUuidGenerator;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -61,7 +62,7 @@ public class TurChatWebhook implements Serializable {
     private static final long serialVersionUID = 1L;
 
     @Id
-    @TurAssignableUuidGenerator
+    @VigletAssignableUuidGenerator
     @Column(name = "id", updatable = false, nullable = false)
     private String id;
 
@@ -133,6 +134,24 @@ public class TurChatWebhook implements Serializable {
     @Column(name = "payloadTemplate", columnDefinition = "longtext")
     private String payloadTemplate;
 
+    /**
+     * T378 — optional HMAC-SHA256 signing key. When set, every dispatch adds a
+     * {@code <signatureHeader>: sha256=<hex>} header computed over the exact
+     * request body (via {@code VigletWebhookSigner}), so the receiver can verify
+     * the call came from this Turing instance. Stored encrypted at rest via
+     * {@code TurSecretCryptoService}; never echoed back through the DTO. Blank =
+     * unsigned (the legacy behaviour).
+     */
+    @Column(name = "signingSecret", length = 2048)
+    private String signingSecret;
+
+    /**
+     * T378 — header name carrying the HMAC signature value. Defaults to
+     * {@code X-Turing-Signature}; only used when {@link #signingSecret} is set.
+     */
+    @Column(name = "signatureHeader", length = 128)
+    private String signatureHeader;
+
     @Column(name = "enabled", nullable = false)
     private boolean enabled = true;
 
@@ -144,13 +163,13 @@ public class TurChatWebhook implements Serializable {
 
     @PrePersist
     void onCreate() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
         this.createdAt = now;
         this.updatedAt = now;
     }
 
     @PreUpdate
     void onUpdate() {
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = LocalDateTime.now(ZoneId.systemDefault());
     }
 }

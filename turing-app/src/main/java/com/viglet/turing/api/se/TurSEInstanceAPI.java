@@ -47,6 +47,7 @@ import com.viglet.turing.solr.TurSolrInstanceProcess;
 import com.viglet.turing.solr.bean.TurSECoreInfo;
 import com.viglet.turing.solr.bean.TurSECoreSiteUsage;
 import com.viglet.turing.solr.source.TurSolrInstanceSource;
+import com.viglet.turing.tenant.TurInfraTenantScope;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -61,18 +62,21 @@ public class TurSEInstanceAPI {
         private final TurSolr turSolr;
         private final TurSNSiteLocaleRepositoryPort turSNSiteLocaleRepositoryPort;
         private final TurSearchEnginePluginFactory pluginFactory;
+        private final TurInfraTenantScope tenantScope;
 
         public TurSEInstanceAPI(TurSolrInstanceSource seInstanceSource,
                         TurSEInstanceMapper turSEInstanceMapper,
                         TurSolrInstanceProcess turSolrInstanceProcess, TurSolr turSolr,
                         TurSNSiteLocaleRepositoryPort turSNSiteLocaleRepositoryPort,
-                        TurSearchEnginePluginFactory pluginFactory) {
+                        TurSearchEnginePluginFactory pluginFactory,
+                        TurInfraTenantScope tenantScope) {
                 this.seInstanceSource = seInstanceSource;
                 this.turSEInstanceMapper = turSEInstanceMapper;
                 this.turSolrInstanceProcess = turSolrInstanceProcess;
                 this.turSolr = turSolr;
                 this.turSNSiteLocaleRepositoryPort = turSNSiteLocaleRepositoryPort;
                 this.pluginFactory = pluginFactory;
+                this.tenantScope = tenantScope;
         }
 
         private ResponseEntity<TurSEInstanceDto> readOnlyResponse() {
@@ -84,7 +88,10 @@ public class TurSEInstanceAPI {
         @Secured({"ROLE_ADMIN", "SE_VIEW"})
         public List<TurSEInstanceDto> turSEInstanceList() {
                 return turSEInstanceMapper.toDtoList(
-                                this.seInstanceSource.findAll().stream()
+                                tenantScope.visibleList(
+                                                this.seInstanceSource::findAll,
+                                                this.seInstanceSource::findVisibleToTenant)
+                                                .stream()
                                                 .sorted(java.util.Comparator.comparing(
                                                                 TurSEInstance::getTitle,
                                                                 String.CASE_INSENSITIVE_ORDER))
@@ -106,7 +113,7 @@ public class TurSEInstanceAPI {
         @Secured({"ROLE_ADMIN", "SE_VIEW"})
         public TurSEInstanceDto turSEInstanceGet(@PathVariable String id) {
                 return turSEInstanceMapper
-                                .toDto(this.seInstanceSource.findById(id).orElse(new TurSEInstance()));
+                                .toDto(this.seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant).orElse(new TurSEInstance()));
         }
 
         @Operation(summary = "Update a Search Engine")
@@ -118,7 +125,8 @@ public class TurSEInstanceAPI {
                         return readOnlyResponse();
                 }
                 TurSEInstance source = turSEInstanceMapper.toEntity(turSEInstanceDto);
-                return ResponseEntity.ok(seInstanceSource.findById(id).map(existing -> {
+                return ResponseEntity.ok(seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant).map(existing -> {
+                        tenantScope.assertWritable(existing);
                         turSEInstanceMapper.updateEntity(source, existing);
                         seInstanceSource.save(existing);
                         return turSEInstanceMapper.toDto(existing);
@@ -133,7 +141,13 @@ public class TurSEInstanceAPI {
                 if (seInstanceSource.isReadOnly()) {
                         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(false);
                 }
-                this.seInstanceSource.delete(id);
+                // T365 — scope the by-id delete: a non-visible id (another
+                // tenant's instance) is treated as not-found, never deleted.
+                this.seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant)
+                                .ifPresent(existing -> {
+                                        tenantScope.assertWritable(existing);
+                                        this.seInstanceSource.delete(id);
+                                });
                 return ResponseEntity.ok(true);
         }
 
@@ -145,6 +159,7 @@ public class TurSEInstanceAPI {
                         return readOnlyResponse();
                 }
                 TurSEInstance turSEInstance = turSEInstanceMapper.toEntity(turSEInstanceDto);
+                tenantScope.stampOnCreate(turSEInstance);
                 this.seInstanceSource.save(turSEInstance);
                 return ResponseEntity.ok(turSEInstanceMapper.toDto(turSEInstance));
         }
@@ -153,7 +168,7 @@ public class TurSEInstanceAPI {
         @GetMapping("/{id}/cores")
         @Secured({"ROLE_ADMIN", "SE_VIEW"})
         public ResponseEntity<List<TurSECoreInfo>> turSEInstanceCores(@PathVariable String id) {
-                return seInstanceSource.findById(id).map(turSEInstance -> {
+                return seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant).map(turSEInstance -> {
                         List<TurSECoreInfo> cores = pluginFactory.getPluginForInstance(turSEInstance).listIndexes(turSEInstance).stream()
                                         .map(core -> new TurSECoreInfo(core.name(), core.numDocs(),
                                                         turSNSiteLocaleRepositoryPort.findCoreUsage(core.name()).stream()
@@ -179,7 +194,7 @@ public class TurSEInstanceAPI {
                 if (request.locale == null || request.locale.isBlank()) {
                         return ResponseEntity.badRequest().build();
                 }
-                return seInstanceSource.findById(id).map(turSEInstance -> {
+                return seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant).map(turSEInstance -> {
                         Locale language = Locale.forLanguageTag(request.locale.replace("_", "-"));
                         pluginFactory.getPluginForInstance(turSEInstance)
                                         .createStandaloneIndex(turSEInstance, language, request.name.trim());
@@ -193,7 +208,7 @@ public class TurSEInstanceAPI {
         @DeleteMapping("/{id}/cores/{core}")
         @Secured({"ROLE_ADMIN", "SE_DELETE"})
         public ResponseEntity<Void> turSEInstanceDeleteCore(@PathVariable String id, @PathVariable String core) {
-                return seInstanceSource.findById(id).map(turSEInstance -> {
+                return seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant).map(turSEInstance -> {
                         if (turSNSiteLocaleRepositoryPort.existsByCore(core)) {
                                 return ResponseEntity.status(HttpStatus.CONFLICT).<Void>build();
                         }
@@ -206,7 +221,7 @@ public class TurSEInstanceAPI {
         @DeleteMapping("/{id}/cores/{core}/documents")
         @Secured({"ROLE_ADMIN", "SE_DELETE"})
         public ResponseEntity<Void> turSEInstanceClearCore(@PathVariable String id, @PathVariable String core) {
-                return seInstanceSource.findById(id).map(turSEInstance -> {
+                return seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant).map(turSEInstance -> {
                         pluginFactory.getPluginForInstance(turSEInstance).clearIndex(turSEInstance, core);
                         return ResponseEntity.noContent().<Void>build();
                 }).orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).<Void>build());
@@ -216,7 +231,7 @@ public class TurSEInstanceAPI {
         @GetMapping("/{id}/system-info")
         @Secured({"ROLE_ADMIN", "SE_VIEW"})
         public ResponseEntity<java.util.Map<String, String>> turSEInstanceSystemInfo(@PathVariable String id) {
-                return seInstanceSource.findById(id).map(turSEInstance -> {
+                return seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant).map(turSEInstance -> {
                         java.util.Map<String, String> info = pluginFactory
                                         .getPluginForInstance(turSEInstance)
                                         .getSystemInfo(turSEInstance);
@@ -228,7 +243,7 @@ public class TurSEInstanceAPI {
         @Secured({"ROLE_ADMIN", "SE_VIEW"})
         public ResponseEntity<TurSEResults> turSEInstanceSelect(@PathVariable String id, @PathVariable String core,
                         @ModelAttribute TurSNSearchParams turSNSearchParams) {
-                return seInstanceSource.findById(id).map(turSEInstance -> {
+                return seInstanceSource.findById(id).filter(tenantScope::isVisibleToTenant).map(turSEInstance -> {
 
                         int page = (turSNSearchParams.getP() != null && turSNSearchParams.getP() > 0)
                                         ? turSNSearchParams.getP()

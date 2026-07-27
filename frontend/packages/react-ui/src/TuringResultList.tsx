@@ -38,6 +38,14 @@ export interface TuringResultListProps {
   loadingComponent?: () => ReactNode;
   isLoading?: boolean;
   className?: string;
+  /**
+   * T463 (Block Z) — analytics passthrough. Fires when a result row is clicked,
+   * with the resolved document and its 0-based index. Wire it to the SDK's
+   * `trackResultClick(documentId, position)` (1-based) so a single prop lights
+   * up both server CTR and the GA4 `turing_search_result_click` event without
+   * editing each `itemComponent`. Self-contained — no SDK import.
+   */
+  onResultClick?: (document: TuringResolvedDocument, index: number) => void;
 }
 
 /**
@@ -60,6 +68,7 @@ export function TuringResultList({
   loadingComponent,
   isLoading = false,
   className,
+  onResultClick,
 }: Readonly<TuringResultListProps>) {
   if (isLoading && loadingComponent) {
     return <div className={className}>{loadingComponent()}</div>;
@@ -71,11 +80,25 @@ export function TuringResultList({
 
   return (
     <div className={className} role="list">
-      {documents.map((doc, index) => (
-        <div key={doc.url || index} role="listitem">
-          {itemComponent({ document: doc, raw: doc.raw, index })}
-        </div>
-      ))}
+      {documents.map((doc, index) => {
+        // A document's `url` is NOT a reliable React key: a real corpus can hold
+        // two hits with the same url (a page and one of its sections, the same
+        // page indexed under two categories, a PDF referenced twice). Duplicate
+        // keys make React mis-reconcile on the next query — a stale row lingers
+        // as a "ghost" duplicate. Prefer the document's stable id when present,
+        // and otherwise fall back to `url#index`, which is always unique.
+        const rawId = doc.raw?.fields?.id;
+        const key = rawId != null ? String(rawId) : `${doc.url}#${index}`;
+        return (
+          <div
+            key={key}
+            role="listitem"
+            onClick={onResultClick ? () => onResultClick(doc, index) : undefined}
+          >
+            {itemComponent({ document: doc, raw: doc.raw, index })}
+          </div>
+        );
+      })}
     </div>
   );
 }

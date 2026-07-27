@@ -52,11 +52,11 @@ import lombok.RequiredArgsConstructor;
  *   <li>{@code DELETE /api/ai-agent/{agentId}/analytics-intent/{id}}</li>
  * </ul>
  *
- * <p>Write endpoints rely on the repository's {@code @CacheEvict}
- * chain + the JPA {@code @EntityListeners} on {@link TurAnalyticsIntent}
- * to wipe both the Spring catalog cache and the Lucene MLT index cache
- * — admins see edits reflected on the next classifier cycle without a
- * restart, same hook pattern T27 uses for the chat-flow router cache.
+ * <p>Write endpoints rely on the JPA {@code @EntityListeners} on
+ * {@link TurAnalyticsIntent} to wipe the Lucene MLT index cache and push the
+ * row to the SE index — admins see edits reflected on the next classifier
+ * cycle without a restart, the same hook pattern T27 uses for the chat-flow
+ * router cache.
  *
  * @author Alexandre Oliveira
  * @since 2026.3.1
@@ -95,12 +95,16 @@ public class TurAnalyticsIntentAPI {
     @Operation(summary = "Create a new analytics intent")
     @Secured({ "ROLE_ADMIN", "AI_AGENT_WRITE" })
     public ResponseEntity<TurAnalyticsIntent> create(@PathVariable String agentId,
-            @RequestBody TurAnalyticsIntent payload) {
+            @RequestBody TurAnalyticsIntentRequest request) {
         TurAIAgent agent = agentRepository.findById(agentId).orElse(null);
         if (agent == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
-        payload.setId(null);
+        TurAnalyticsIntent payload = new TurAnalyticsIntent();
+        payload.setLabel(request.label());
+        payload.setSamples(request.samples());
+        payload.setDescription(request.description());
+        payload.setEnabled(request.enabledOrDefault());
         payload.setTurAIAgent(agent);
         TurAnalyticsIntent saved = intentRepository.save(payload);
         return ResponseEntity.status(HttpStatus.CREATED).body(saved);
@@ -112,14 +116,14 @@ public class TurAnalyticsIntentAPI {
     @Secured({ "ROLE_ADMIN", "AI_AGENT_WRITE" })
     public ResponseEntity<TurAnalyticsIntent> update(@PathVariable String agentId,
             @PathVariable String id,
-            @RequestBody TurAnalyticsIntent payload) {
+            @RequestBody TurAnalyticsIntentRequest request) {
         return intentRepository.findById(id)
                 .filter(intent -> matchesAgent(intent, agentId))
                 .map(existing -> {
-                    existing.setLabel(payload.getLabel());
-                    existing.setSamples(payload.getSamples());
-                    existing.setDescription(payload.getDescription());
-                    existing.setEnabled(payload.getEnabled());
+                    existing.setLabel(request.label());
+                    existing.setSamples(request.samples());
+                    existing.setDescription(request.description());
+                    existing.setEnabled(request.enabledOrDefault());
                     return ResponseEntity.ok(intentRepository.save(existing));
                 })
                 .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).build());

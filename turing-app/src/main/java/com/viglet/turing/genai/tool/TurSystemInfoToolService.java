@@ -28,10 +28,16 @@ import java.sql.DatabaseMetaData;
 @Service
 public class TurSystemInfoToolService {
 
+    // --- S1192: extracted duplicated literals ---
+    private static final String STATUS = "Status: ";
+    private static final String ENDPOINT = "Endpoint: ";
+
+
     private static final String USED_PREFIX = "Used: ";
     private static final String FREE_PREFIX = "Free: ";
     private static final String STATUS_UP = "Status: UP\n";
     private static final String STATUS_DOWN = "Status: DOWN\n";
+    private static final String STATUS_DOWN_SECTION = "Status: DOWN\n\n";
     private static final String ERROR_PREFIX = "Error: ";
 
     private final DataSource dataSource;
@@ -159,60 +165,70 @@ public class TurSystemInfoToolService {
         log.info("[SystemInfo Tool] get_external_services_status called");
         StringBuilder sb = new StringBuilder();
         sb.append("=== External Services Status ===\n\n");
+        appendExternalMongoStatus(sb);
+        appendExternalStorageStatus(sb);
+        return sb.toString();
+    }
 
+    private void appendExternalMongoStatus(StringBuilder sb) {
         sb.append("--- MongoDB ---\n");
         if (!mongoEnabled) {
             sb.append("Status: DISABLED\n");
-        } else {
-            try (var mongoClient = com.mongodb.client.MongoClients.create(mongoUri)) {
-                org.bson.Document buildInfo = mongoClient.getDatabase("admin")
-                        .runCommand(new org.bson.Document("buildInfo", 1));
-                sb.append(STATUS_UP);
-                sb.append("Version: ").append(buildInfo.getString("version")).append("\n");
-                sb.append("URI: ").append(mongoUri).append("\n");
-            } catch (Exception e) {
-                sb.append(STATUS_DOWN);
-                sb.append("URI: ").append(mongoUri).append("\n");
-                sb.append(ERROR_PREFIX).append(e.getMessage()).append("\n");
-            }
+            return;
         }
+        try (var mongoClient = com.mongodb.client.MongoClients.create(mongoUri)) {
+            org.bson.Document buildInfo = mongoClient.getDatabase("admin")
+                    .runCommand(new org.bson.Document("buildInfo", 1));
+            sb.append(STATUS_UP);
+            sb.append("Version: ").append(buildInfo.getString("version")).append("\n");
+            sb.append("URI: ").append(mongoUri).append("\n");
+        } catch (Exception e) {
+            sb.append(STATUS_DOWN);
+            sb.append("URI: ").append(mongoUri).append("\n");
+            sb.append(ERROR_PREFIX).append(e.getMessage()).append("\n");
+        }
+    }
 
+    private void appendExternalStorageStatus(StringBuilder sb) {
         sb.append("\n--- Storage (").append(storageService.getType()).append(") ---\n");
         if (!storageService.isEnabled()) {
             sb.append("Status: DISABLED\n");
         } else if (storageService.getType() == TurStorageType.MINIO) {
-            var minio = turConfigProperties.getStorage() != null ? turConfigProperties.getStorage().getMinio() : null;
-            String endpoint = minio != null ? minio.getEndpoint() : "";
-            try {
-                var request = java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(endpoint + "/minio/health/cluster"))
-                        .GET().build();
-                var response = java.net.http.HttpClient.newHttpClient()
-                        .send(request, java.net.http.HttpResponse.BodyHandlers.discarding());
-                String status = response.statusCode() < 500 ? "UP" : "DOWN";
-                sb.append("Status: ").append(status).append("\n");
-                sb.append("Endpoint: ").append(endpoint).append("\n");
-                response.headers().firstValue("Server").ifPresent(
-                        server -> sb.append("Server: ").append(server).append("\n"));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                sb.append(STATUS_DOWN);
-                sb.append("Endpoint: ").append(endpoint).append("\n");
-                sb.append(ERROR_PREFIX).append(e.getMessage()).append("\n");
-            } catch (Exception e) {
-                sb.append(STATUS_DOWN);
-                sb.append("Endpoint: ").append(endpoint).append("\n");
-                sb.append(ERROR_PREFIX).append(e.getMessage()).append("\n");
-            }
+            appendExternalMinioStatus(sb);
         } else {
             var storage = turConfigProperties.getStorage();
             String path = storage != null && storage.getFilesystem() != null && storage.getFilesystem().getPath() != null
                     ? storage.getFilesystem().getPath() : "./store/assets";
             sb.append("Path: ").append(path).append("\n");
-            sb.append("Status: ").append(new java.io.File(path).isDirectory() ? "UP" : "DOWN").append("\n");
+            sb.append(STATUS).append(new java.io.File(path).isDirectory() ? "UP" : "DOWN").append("\n");
         }
+    }
 
-        return sb.toString();
+    private void appendExternalMinioStatus(StringBuilder sb) {
+        var minio = turConfigProperties.getStorage() != null ? turConfigProperties.getStorage().getMinio() : null;
+        String endpoint = minio != null ? minio.getEndpoint() : "";
+        try (var client = java.net.http.HttpClient.newHttpClient()) {
+            // URI.create + .uri() validate the scheme and throw on a blank/relative
+            // endpoint — keep them inside the try so that surfaces as Status: DOWN.
+            var request = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(endpoint + "/minio/health/cluster"))
+                    .GET().build();
+            var response = client.send(request, java.net.http.HttpResponse.BodyHandlers.discarding());
+            String status = response.statusCode() < 500 ? "UP" : "DOWN";
+            sb.append(STATUS).append(status).append("\n");
+            sb.append(ENDPOINT).append(endpoint).append("\n");
+            response.headers().firstValue("Server").ifPresent(
+                    server -> sb.append("Server: ").append(server).append("\n"));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            sb.append(STATUS_DOWN);
+            sb.append(ENDPOINT).append(endpoint).append("\n");
+            sb.append(ERROR_PREFIX).append(e.getMessage()).append("\n");
+        } catch (Exception e) {
+            sb.append(STATUS_DOWN);
+            sb.append(ENDPOINT).append(endpoint).append("\n");
+            sb.append(ERROR_PREFIX).append(e.getMessage()).append("\n");
+        }
     }
 
     private void appendAppVersion(StringBuilder sb) {
@@ -264,7 +280,7 @@ public class TurSystemInfoToolService {
                     .runCommand(new org.bson.Document("buildInfo", 1));
             sb.append("Status: UP (v").append(buildInfo.getString("version")).append(")\n\n");
         } catch (Exception e) {
-            sb.append("Status: DOWN\n\n");
+            sb.append(STATUS_DOWN_SECTION);
         }
     }
 
@@ -281,7 +297,7 @@ public class TurSystemInfoToolService {
             String path = storage != null && storage.getFilesystem() != null && storage.getFilesystem().getPath() != null
                     ? storage.getFilesystem().getPath() : "./store/assets";
             sb.append("Path: ").append(path).append("\n");
-            sb.append("Status: ").append(new java.io.File(path).isDirectory() ? "UP" : "DOWN").append("\n\n");
+            sb.append(STATUS).append(new java.io.File(path).isDirectory() ? "UP" : "DOWN").append("\n\n");
         }
     }
 
@@ -294,12 +310,12 @@ public class TurSystemInfoToolService {
                     .GET().build();
             var response = client
                     .send(request, java.net.http.HttpResponse.BodyHandlers.discarding());
-            sb.append("Status: ").append(response.statusCode() < 500 ? "UP" : "DOWN").append("\n\n");
+            sb.append(STATUS).append(response.statusCode() < 500 ? "UP" : "DOWN").append("\n\n");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            sb.append("Status: DOWN\n\n");
+            sb.append(STATUS_DOWN_SECTION);
         } catch (Exception e) {
-            sb.append("Status: DOWN\n\n");
+            sb.append(STATUS_DOWN_SECTION);
         }
     }
 

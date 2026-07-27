@@ -1,5 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { TurLLMInstance } from '@/models/llm/llm-instance.model.ts';
+import type {
+  TurLLMInstance,
+  TurLlmCatalogChangeNotification,
+  TurLlmDeprecatedModelUsage,
+} from '@/models/llm/llm-instance.model.ts';
 import { TurLLMInstanceService } from '@/services/llm/llm.service';
 import { queryKeys } from './keys';
 
@@ -9,6 +13,22 @@ export function useLlmInstances() {
   return useQuery<TurLLMInstance[]>({
     queryKey: queryKeys.llmInstances.list(),
     queryFn: () => service.query(),
+  });
+}
+
+/** T782 — instances configured with a catalog-deprecated/retired model. */
+export function useLlmDeprecations() {
+  return useQuery<TurLlmDeprecatedModelUsage[]>({
+    queryKey: queryKeys.llmInstances.deprecations(),
+    queryFn: () => service.deprecations(),
+  });
+}
+
+/** T788 — catalog change-feed notifications for in-use models. */
+export function useLlmCatalogChanges() {
+  return useQuery<TurLlmCatalogChangeNotification[]>({
+    queryKey: queryKeys.llmInstances.changeFeed(),
+    queryFn: () => service.changeFeed(),
   });
 }
 

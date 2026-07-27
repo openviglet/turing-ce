@@ -25,6 +25,21 @@ export interface BentoInlineEditProps {
    * makes sense. The user sees a focused input on landing.
    */
   autoFocus?: boolean;
+  /**
+   * Render as plain, non-editable text — no click-to-edit affordance.
+   * Used by read-only surfaces (e.g. the shared GLOBAL BYO-infra pool
+   * when the caller is not a platform admin).
+   */
+  readOnly?: boolean;
+  /**
+   * Push every keystroke up through `onSave` (live), instead of only on
+   * blur/Enter. Used by "new entity" flows where the field stages locally
+   * (no mutation per keystroke) and downstream gates — e.g. the Save
+   * button's `titleMissing` check — must react as the user types. With
+   * commit-on-blur, a user who types the name then clicks the (still
+   * disabled) Save button never commits, so Save appears stuck disabled.
+   */
+  commitOnChange?: boolean;
 }
 
 /**
@@ -43,6 +58,8 @@ export function BentoInlineEdit({
   className = "",
   ariaLabel,
   autoFocus = false,
+  readOnly = false,
+  commitOnChange = false,
 }: Readonly<BentoInlineEditProps>) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(autoFocus);
@@ -91,7 +108,27 @@ export function BentoInlineEdit({
     setEditing(false);
   }
 
+  // Live-commit path for "new entity" flows: keep local draft in sync AND
+  // push the raw value up so downstream gates (e.g. the Save button) react
+  // per keystroke. Trimming is left to the consumer's gate so the user can
+  // still type spaces mid-word.
+  function handleChange(next: string) {
+    setDraft(next);
+    if (commitOnChange) onSave(next);
+  }
+
   const isEmpty = !value;
+
+  // Read-only: plain text, no click target, no hover affordance. Kept
+  // typographically identical to the editable display via `className`.
+  if (readOnly) {
+    return (
+      <span className={`block w-full ${className}`} aria-label={ariaLabel}>
+        {value || <span className="text-muted-foreground/80">{placeholder ?? "—"}</span>}
+      </span>
+    );
+  }
+
   const sharedClass = `w-full bg-transparent outline-none border-b transition-colors duration-200 ${className}`;
   /*
    * Empty display state needs a permanent visual cue so the user
@@ -144,7 +181,7 @@ export function BentoInlineEdit({
       <textarea
         ref={inputRef as React.RefObject<HTMLTextAreaElement>}
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
+        onChange={(e) => handleChange(e.target.value)}
         onBlur={commit}
         onKeyDown={handleKeyDown}
         placeholder={placeholder}
@@ -159,7 +196,7 @@ export function BentoInlineEdit({
     <Input
       ref={inputRef as React.RefObject<HTMLInputElement>}
       value={draft}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => handleChange(e.target.value)}
       onBlur={commit}
       onKeyDown={handleKeyDown}
       placeholder={placeholder}

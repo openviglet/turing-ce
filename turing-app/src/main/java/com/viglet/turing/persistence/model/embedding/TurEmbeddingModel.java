@@ -4,7 +4,8 @@ import java.io.Serial;
 import java.io.Serializable;
 
 import com.viglet.turing.persistence.model.llm.TurLLMInstance;
-import com.viglet.turing.persistence.utils.TurAssignableUuidGenerator;
+import com.viglet.core.jpa.VigletAssignableUuidGenerator;
+import com.viglet.core.tenancy.VigletTenantOwnedInfra;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -25,12 +26,12 @@ import lombok.Setter;
 @Setter
 @Entity
 @Table(name = "embedding_model")
-public class TurEmbeddingModel implements Serializable {
+public class TurEmbeddingModel implements Serializable, VigletTenantOwnedInfra {
 	@Serial
 	private static final long serialVersionUID = 1L;
 
 	@Id
-	@TurAssignableUuidGenerator
+	@VigletAssignableUuidGenerator
 	@Column(name = "id", updatable = false, nullable = false)
 	private String id;
 

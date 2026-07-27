@@ -41,7 +41,9 @@ import com.viglet.turing.api.sn.search.TurSNSiteSearchService;
 import com.viglet.turing.commons.sn.search.TurSNParamType;
 import com.viglet.turing.genai.TurAgentChatExecutor;
 import com.viglet.turing.genai.TurChatMessage;
+import com.viglet.turing.genai.TurChatProviderErrorMapper;
 import com.viglet.turing.genai.TurSNGenAi;
+import com.viglet.turing.genai.TurSNGenAiChatRequest;
 import com.viglet.turing.genai.TurSNGenAi.ConversationMessage;
 import com.viglet.turing.genai.TurGenAiContext;
 import com.viglet.turing.genai.TurGenAiContextFactory;
@@ -80,6 +82,11 @@ import reactor.core.publisher.Flux;
 @RequestMapping("/api/sn/{siteName}/chat")
 @Tag(name = "Semantic Navigation with Generative AI", description = "Semantic Navigation with Generative AI API")
 public class TurSNSiteGenAiAPI {
+
+    // --- S1192: extracted duplicated literals ---
+    private static final String SITE = "site '";
+    private static final String HEARTBEAT = "heartbeat";
+
 	private static final String NOT_ENABLED_MESSAGE = "Language Model is not enabled for this site.";
 	private static final String ASSISTANT_ROLE = "assistant";
 
@@ -94,6 +101,7 @@ public class TurSNSiteGenAiAPI {
 	private final TurConfigProperties configProperties;
 	private final TurChatMemoryService chatMemoryService;
 	private final TurChatSlotEventBus slotEventBus;
+	private final com.viglet.turing.service.chatslots.TurProactiveCopilotService proactiveCopilotService;
 	private final com.viglet.turing.service.chatslots.TurChatSlotSseRegistry slotSseRegistry;
 	private final TurChatSlotExtractionService slotExtractionService;
 	private final TurChatMultiModalSlotService multiModalSlotService;
@@ -101,6 +109,14 @@ public class TurSNSiteGenAiAPI {
 	private final TurChatShareOgService shareOgService;
 	private final TurAgentWorkspace agentWorkspace;
 	private final TurWorkspaceEventBus workspaceEventBus;
+	private final com.viglet.turing.genai.flow.TurConversationLock conversationLock;
+	private final com.viglet.turing.genai.TurDefaultAgentResolver turDefaultAgentResolver;
+	private final com.viglet.turing.genai.persona.TurAgentPersonaResolver turAgentPersonaResolver;
+	private final com.viglet.turing.service.llm.budget.TurChatCostBudgetGate costBudgetGate;
+	private final com.viglet.turing.properties.TurAbuseControlProperty abuseControlProperty;
+	// T790 / §LIV.1 (Block BF) — resolves whether the vectorless copilot can answer
+	// (a default LLM is configured) for the VECTORLESS_STRUCTURED readiness path.
+	private final com.viglet.turing.genai.catalog.TurCatalogCopilotService catalogCopilotService;
 
 	public TurSNSiteGenAiAPI(TurSNSearchProcess turSNSearchProcess,
 			TurSNGenAi turGenAi,
@@ -113,16 +129,25 @@ public class TurSNSiteGenAiAPI {
 			TurConfigProperties configProperties,
 			TurChatMemoryService chatMemoryService,
 			TurChatSlotEventBus slotEventBus,
+			com.viglet.turing.service.chatslots.TurProactiveCopilotService proactiveCopilotService,
 			com.viglet.turing.service.chatslots.TurChatSlotSseRegistry slotSseRegistry,
 			TurChatSlotExtractionService slotExtractionService,
 			TurChatMultiModalSlotService multiModalSlotService,
 			TurChatHandoffService handoffService,
 			TurChatShareOgService shareOgService,
 			TurAgentWorkspace agentWorkspace,
-			TurWorkspaceEventBus workspaceEventBus) {
+			TurWorkspaceEventBus workspaceEventBus,
+			com.viglet.turing.genai.flow.TurConversationLock conversationLock,
+			com.viglet.turing.genai.TurDefaultAgentResolver turDefaultAgentResolver,
+			com.viglet.turing.genai.persona.TurAgentPersonaResolver turAgentPersonaResolver,
+			com.viglet.turing.service.llm.budget.TurChatCostBudgetGate costBudgetGate,
+			com.viglet.turing.properties.TurAbuseControlProperty abuseControlProperty,
+			com.viglet.turing.genai.catalog.TurCatalogCopilotService catalogCopilotService) {
 		this.turSNSearchProcess = turSNSearchProcess;
 		this.turGenAi = turGenAi;
 		this.turGenAiContextFactory = turGenAiContextFactory;
+		this.turDefaultAgentResolver = turDefaultAgentResolver;
+		this.turAgentPersonaResolver = turAgentPersonaResolver;
 		this.turSNSiteLocaleRepository = turSNSiteLocaleRepository;
 		this.turSNSiteSearchService = turSNSiteSearchService;
 		this.turIntentRepository = turIntentRepository;
@@ -131,6 +156,7 @@ public class TurSNSiteGenAiAPI {
 		this.configProperties = configProperties;
 		this.chatMemoryService = chatMemoryService;
 		this.slotEventBus = slotEventBus;
+		this.proactiveCopilotService = proactiveCopilotService;
 		this.slotSseRegistry = slotSseRegistry;
 		this.slotExtractionService = slotExtractionService;
 		this.multiModalSlotService = multiModalSlotService;
@@ -138,6 +164,40 @@ public class TurSNSiteGenAiAPI {
 		this.shareOgService = shareOgService;
 		this.agentWorkspace = agentWorkspace;
 		this.workspaceEventBus = workspaceEventBus;
+		this.conversationLock = conversationLock;
+		this.costBudgetGate = costBudgetGate;
+		this.abuseControlProperty = abuseControlProperty;
+		this.catalogCopilotService = catalogCopilotService;
+	}
+
+	// T648 / §XXXVII.10 — reject an over-cap anonymous upload BEFORE Tika/vision.
+	private void assertUploadWithinCap(org.springframework.web.multipart.MultipartFile file) {
+		long cap = abuseControlProperty.getChat().getMaxUploadBytes();
+		if (cap > 0 && file != null && file.getSize() > cap) {
+			throw new IllegalArgumentException(
+					"Uploaded file exceeds the maximum allowed size of " + cap + " bytes.");
+		}
+	}
+
+	// T648 / §XXXVII.10 — bound anonymous conversation message count + length.
+	private void assertMessagesWithinCaps(List<ConversationMessage> messages) {
+		if (messages == null) {
+			return;
+		}
+		var chat = abuseControlProperty.getChat();
+		if (chat.getMaxMessagesPerTurn() > 0 && messages.size() > chat.getMaxMessagesPerTurn()) {
+			throw new IllegalArgumentException(
+					"Too many messages in one turn (max " + chat.getMaxMessagesPerTurn() + ").");
+		}
+		if (chat.getMaxMessageChars() > 0) {
+			for (ConversationMessage m : messages) {
+				if (m != null && m.content() != null && m.content().length() > chat.getMaxMessageChars()) {
+					throw new IllegalArgumentException(
+							"A chat message exceeds the maximum length of " + chat.getMaxMessageChars()
+									+ " characters.");
+				}
+			}
+		}
 	}
 
 	/**
@@ -162,7 +222,15 @@ public class TurSNSiteGenAiAPI {
 		/** Linked agent has no embedding model instance. */
 		MISSING_EMBEDDING,
 		/** Linked agent has no vector store instance. */
-		MISSING_STORE
+		MISSING_STORE,
+		/**
+		 * T790 / §LIV.1 (Block BF) — the site runs in {@code VECTORLESS_STRUCTURED}
+		 * mode (the catalog copilot, which needs neither an embedding model nor a
+		 * vector store) but no usable <em>default LLM</em> is configured, so the
+		 * copilot cannot answer. The vectorless readiness path reports this instead
+		 * of {@code MISSING_EMBEDDING}/{@code MISSING_STORE}.
+		 */
+		MISSING_DEFAULT_LLM
 	}
 
 	/**
@@ -173,9 +241,24 @@ public class TurSNSiteGenAiAPI {
 	 * so broken credentials do not hide the AI Mode button.
 	 */
 	private ChatDisabledReason diagnoseAgentReadiness(TurSNSiteGenAi genAi) {
-		if (genAi == null) return ChatDisabledReason.NO_GENAI;
-		TurAIAgent agent = genAi.getTurAIAgent();
-		if (agent == null) return ChatDisabledReason.NO_AGENT;
+		// T790 / §LIV.1 (Block BF) — Vectorless (Structured-Data) RAG: a site in
+		// VECTORLESS_STRUCTURED mode answers through the T392 catalog copilot, which
+		// grounds the default LLM on a NL→DSL search over the declared field schema
+		// (no embeddings). It needs neither an embedding model nor a vector store —
+		// so readiness is "a usable default LLM is configured", not the classic
+		// MISSING_EMBEDDING/MISSING_STORE walk. HYBRID keeps the full vector walk
+		// below (it is a superset that also runs the copilot).
+		var mode = genAi != null ? genAi.getKnowledgeBaseMode()
+				: com.viglet.turing.persistence.model.sn.genai.TurSNKnowledgeBaseMode.VECTOR;
+		if (mode == com.viglet.turing.persistence.model.sn.genai.TurSNKnowledgeBaseMode.VECTORLESS_STRUCTURED) {
+			return catalogCopilotService.isAvailable()
+					? ChatDisabledReason.NONE
+					: ChatDisabledReason.MISSING_DEFAULT_LLM;
+		}
+		// T622 — a site with no agent of its own resolves to the global Default
+		// AI Agent when one is set (fail-open); otherwise the classic reasons.
+		TurAIAgent agent = turDefaultAgentResolver.resolveEffectiveAgent(genAi);
+		if (agent == null) return genAi == null ? ChatDisabledReason.NO_GENAI : ChatDisabledReason.NO_AGENT;
 		if (agent.getEnabled() != 1) return ChatDisabledReason.AGENT_DISABLED;
 		if (!agent.isRagEnabled()) return ChatDisabledReason.RAG_DISABLED;
 		boolean hasLlm = agent.getLlmInstances() != null && !agent.getLlmInstances().isEmpty();
@@ -200,13 +283,37 @@ public class TurSNSiteGenAiAPI {
 		}
 	}
 
+	/**
+	 * T707 — resolves a locale that actually has an index for this site. A
+	 * client that requests a locale the site was never indexed in (e.g. {@code en}
+	 * when only {@code en-US} exists) previously got the misleading
+	 * "Language Model is not enabled for this site." Now we fall back to the
+	 * site's default indexed locale so chat answers from the content that exists,
+	 * instead of refusing. Returns the requested locale unchanged when it is
+	 * indexed, or when no indexed fallback is available (the caller still guards).
+	 */
+	private Locale resolveIndexedLocale(String requested, String siteName) {
+		Locale locale = resolveLocale(requested, siteName);
+		if (locale != null && turSNSearchProcess.existsByTurSNSiteAndLanguage(siteName, locale)) {
+			return locale;
+		}
+		Locale fallback = turSNSiteSearchService.resolveDefaultLocale(siteName);
+		if (fallback != null && !fallback.equals(locale)
+				&& turSNSearchProcess.existsByTurSNSiteAndLanguage(siteName, fallback)) {
+			log.debug("RAG chat: requested locale '{}' not indexed for SN Site '{}', falling back to '{}'",
+					requested, siteName, fallback);
+			return fallback;
+		}
+		return locale;
+	}
+
 	@GetMapping
 	public TurChatMessage chatMessage(@PathVariable String siteName,
 			@RequestParam(name = TurSNParamType.QUERY) String q,
 			@RequestParam(required = false, name = TurSNParamType.LOCALE) String localeRequest) {
 		log.debug("RAG chat (single-turn) received for SN Site '{}': locale='{}', query='{}'",
 				siteName, localeRequest, q);
-		Locale locale = resolveLocale(localeRequest, siteName);
+		Locale locale = resolveIndexedLocale(localeRequest, siteName);
 		if (turSNSearchProcess.existsByTurSNSiteAndLanguage(siteName, locale)) {
 			return turSNSearchProcess.getSNSite(siteName).map(site -> {
 				var turSNSiteGenAI = site.getTurSNSiteGenAi();
@@ -275,7 +382,38 @@ public class TurSNSiteGenAiAPI {
 		int historySize = request.messages() == null ? 0 : request.messages().size();
 		log.debug("RAG chat conversation received for SN Site '{}': locale='{}', historySize={}",
 				siteName, request.locale(), historySize);
-		Locale locale = resolveLocale(request.locale(), siteName);
+		// T648 / §XXXVII.10 — bound anonymous message count + length before any work.
+		assertMessagesWithinCaps(request.messages());
+		// T707 — fall back to the site's default indexed locale when the client
+		// requests one that was never indexed, instead of refusing the turn.
+		Locale locale = resolveIndexedLocale(request.locale(), siteName);
+		// Defer all heavy work (RAG retrieval + prompt build + provider calls) to
+		// subscription time so the SSE handshake (200 text/event-stream) is
+		// committed before any upstream call fires. onErrorResume then turns an
+		// upstream failure (unreachable embedding model / LLM) into a readable
+		// in-stream assistant message instead of a 503 with a JSON ProblemDetail
+		// body the SSE client can't consume — mirroring TurAIAgentChatAPI /
+		// TurPersonaChatAPI, which already map streaming failures this way.
+		return Flux.defer(() -> buildConversationStream(siteName, request, locale))
+				.onErrorResume(err -> {
+					log.error("[SNChat] Conversation stream for SN Site '{}' failed: {}",
+							siteName, err.getMessage(), err);
+					return Flux.just(new TurAgentChatExecutor.ChatResponse(ASSISTANT_ROLE,
+							TurChatProviderErrorMapper.toUserMessage(err, locale), "token"));
+				});
+	}
+
+	private Flux<TurAgentChatExecutor.ChatResponse> buildConversationStream(String siteName,
+			ConversationRequest request, Locale locale) {
+		// T641 / §XXXVII.3 — hard cost kill-switch: refuse the anonymous turn
+		// before any embedding/LLM call fires once the configured month-to-date
+		// spend ceiling is reached. Off by default (cap <= 0).
+		if (costBudgetGate.isAnonymousChatHardCapExceeded()) {
+			log.warn("[SNChat] Refusing conversation for SN Site '{}' — anonymous-chat hard cost cap reached",
+					siteName);
+			return Flux.just(new TurAgentChatExecutor.ChatResponse(ASSISTANT_ROLE,
+					"The assistant is temporarily unavailable. Please try again later."));
+		}
 		if (!turSNSearchProcess.existsByTurSNSiteAndLanguage(siteName, locale)) {
 			log.debug("RAG chat skipped for SN Site '{}': locale '{}' not available", siteName, locale);
 			return Flux.just(new TurAgentChatExecutor.ChatResponse(ASSISTANT_ROLE, NOT_ENABLED_MESSAGE));
@@ -286,7 +424,7 @@ public class TurSNSiteGenAiAPI {
 				log.debug("RAG chat skipped for SN Site '{}': agent not ready", siteName);
 				return Flux.just(new TurAgentChatExecutor.ChatResponse(ASSISTANT_ROLE, NOT_ENABLED_MESSAGE));
 			}
-			TurAIAgent agent = turSNSiteGenAI.getTurAIAgent();
+			TurAIAgent agent = turDefaultAgentResolver.resolveEffectiveAgent(turSNSiteGenAI);
 			TurLLMInstance llmInstance = agent.getLlmInstances().stream()
 					.filter(llm -> llm.getEnabled() == 1)
 					.findFirst()
@@ -300,8 +438,10 @@ public class TurSNSiteGenAiAPI {
 					siteName, locale, collectionName, agent.getTitle(), llmInstance.getTitle());
 			TurGenAiContext context = turGenAiContextFactory.build(turSNSiteGenAI, collectionName);
 			Flux<TurAgentChatExecutor.ChatResponse> stream = turGenAi.assistantConversationStreaming(
-					context, agent, llmInstance, request.messages(), request.filters(),
-					request.conversationId(), request.flowId(), request.forcedVariant(), locale);
+					context, agent, llmInstance,
+					new TurSNGenAiChatRequest(request.messages(), request.filters(),
+							request.conversationId(), request.flowId(), request.forcedVariant(), locale,
+							request.personaId()));
 			// Capture the turn for chat memory: accumulate the streamed assistant
 			// chunks and enqueue once the stream finishes. The service is a no-op
 			// when the agent has chatMemoryEnabled=false or the logging engine is
@@ -411,21 +551,6 @@ public class TurSNSiteGenAiAPI {
 	}
 
 	/**
-	 * Public, unauthenticated <em>write</em> of a single slot on the current
-	 * conversation. Companion to {@link #chatSlots(String, String)} — lets a
-	 * React component force a slot value without round-tripping through the
-	 * chat (e.g. user clicks a quick-pick button and the corresponding
-	 * question should be skipped). Writes to every active chat-flow state for
-	 * the conversation; returns the number of state rows touched (0 when the
-	 * conversation hasn't started a flow yet).
-	 *
-	 * <p>The {@code conversationId} must match the {@code TUR_SESSION} cookie
-	 * the SDK sent on prior chat turns — otherwise there's no state to write
-	 * into and the call is a no-op.
-	 *
-	 * @since 2026.2.7
-	 */
-	/**
 	 * T121 / §IX.6.a — resume a conversation parked at a {@code suspend}
 	 * node. Optionally carries {@code slotUpdates} (a webhook payload, an
 	 * approval decision, the result of a scheduled job) which are applied
@@ -441,8 +566,9 @@ public class TurSNSiteGenAiAPI {
 			return new ChatResumeResponse(0, false, "conversationId is required");
 		}
 		TurChatFlowEngineService.ResumeResult result =
-				chatFlowEngineService.resumeSuspendedFlow(body.conversationId(),
-						body.slotUpdates(), body.resumeReason());
+				conversationLock.runExclusive(body.conversationId(),
+						() -> chatFlowEngineService.resumeSuspendedFlow(body.conversationId(),
+								body.slotUpdates(), body.resumeReason()));
 		return new ChatResumeResponse(result.resumed(), !result.nothingToResume(), null);
 	}
 
@@ -459,10 +585,15 @@ public class TurSNSiteGenAiAPI {
 		if (body == null) {
 			return new ChatSlotWriteResponse(0);
 		}
-		int touched = chatFlowEngineService.writeSlot(
-				body.conversationId(), body.name(), body.value(),
-				com.viglet.turing.persistence.model.agent.TurChatSlotAuditSource.ENDPOINT,
-				"site=" + siteName);
+		// Serialize against the conversation's chat turn so this optimistic
+		// write cannot lost-update the cursor mid-advance (see TurConversationLock).
+		log.debug("[ConvLock] slot-write endpoint conv='{}' name='{}'",
+				body.conversationId(), body.name());
+		int touched = conversationLock.runExclusive(body.conversationId(), () ->
+				chatFlowEngineService.writeSlot(
+						body.conversationId(), body.name(), body.value(),
+						com.viglet.turing.persistence.model.agent.TurChatSlotAuditSource.ENDPOINT,
+						"site=" + siteName));
 		return new ChatSlotWriteResponse(touched);
 	}
 
@@ -494,7 +625,8 @@ public class TurSNSiteGenAiAPI {
 			return new ChatFormSubmitResponse(false, 0, 0, null, "conversationId is required");
 		}
 		TurChatFlowEngineService.FormSubmitResult result =
-				chatFlowEngineService.submitForm(body.conversationId(), body.values());
+				conversationLock.runExclusive(body.conversationId(),
+						() -> chatFlowEngineService.submitForm(body.conversationId(), body.values()));
 		return new ChatFormSubmitResponse(true, result.fieldsWritten(),
 				result.advancedStates(), result.currentNodeId(), null);
 	}
@@ -536,20 +668,27 @@ public class TurSNSiteGenAiAPI {
 					TurSNSiteGenAi genAi = site.getTurSNSiteGenAi();
 					if (genAi == null) {
 						return new ChatFlowSelectResponse(false, null, null,
-								"site '" + siteName + "' has no GenAI agent configured");
+								SITE + siteName + "' has no GenAI agent configured");
 					}
-					TurAIAgent agent = genAi.getTurAIAgent();
+					TurAIAgent agent = turDefaultAgentResolver.resolveEffectiveAgent(genAi);
 					if (agent == null) {
 						return new ChatFlowSelectResponse(false, null, null,
-								"site '" + siteName + "' has no GenAI agent configured");
+								SITE + siteName + "' has no GenAI agent configured");
 					}
-					TurChatFlowEngineService.PinResult pin = chatFlowEngineService
-							.pinFlowForConversation(agent, body.conversationId(), body.flow());
+					// T633 — carry an anonymous per-request persona into the
+					// pinned flow, validated against the effective agent's
+					// catalog (unknown → null, i.e. no persona seeded).
+					String personaId = turAgentPersonaResolver.validateCatalogPersonaId(
+							agent, body.personaId());
+					TurChatFlowEngineService.PinResult pin = conversationLock.runExclusive(
+							body.conversationId(),
+							() -> chatFlowEngineService.pinFlowForConversation(
+									agent, body.conversationId(), body.flow(), personaId));
 					return new ChatFlowSelectResponse(pin.success(), pin.pinnedFlowId(),
 							pin.pinnedFlowName(), pin.reason());
 				})
 				.orElseGet(() -> new ChatFlowSelectResponse(false, null, null,
-						"site '" + siteName + "' not found"));
+						SITE + siteName + "' not found"));
 	}
 
 	/**
@@ -558,7 +697,13 @@ public class TurSNSiteGenAiAPI {
 	 * insensitive). Either id or name resolves — the deep-link convenience
 	 * path uses the name.
 	 */
-	public record ChatFlowSelectRequest(String conversationId, String flow) {
+	/**
+	 * Pin request. T633 adds the optional {@code personaId} — a per-request
+	 * persona seeded into the freshly-pinned flow (validated against the
+	 * effective agent's catalog; unknown/blank → none), so the anonymous
+	 * demo's chosen persona survives the flow selection.
+	 */
+	public record ChatFlowSelectRequest(String conversationId, String flow, String personaId) {
 	}
 
 	public record ChatFlowSelectResponse(boolean success, String pinnedFlowId,
@@ -606,7 +751,7 @@ public class TurSNSiteGenAiAPI {
 		Flux<org.springframework.http.codec.ServerSentEvent<TurChatSessionSlotsDto>> heartbeats =
 				Flux.interval(java.time.Duration.ofSeconds(25))
 						.map(tick -> org.springframework.http.codec.ServerSentEvent
-								.<TurChatSessionSlotsDto>builder().comment("heartbeat").build());
+								.<TurChatSessionSlotsDto>builder().comment(HEARTBEAT).build());
 		// T90 — refcount this connection on the SSE channel registry so the
 		// admin debug surface can report open channels. doFinally fires on
 		// complete / error / cancel (cancel being the usual SSE disconnect).
@@ -648,13 +793,61 @@ public class TurSNSiteGenAiAPI {
 		Flux<org.springframework.http.codec.ServerSentEvent<com.viglet.turing.persistence.dto.agent.TurChatSessionSlotsDeltaDto>> heartbeats =
 				Flux.interval(java.time.Duration.ofSeconds(25))
 						.map(tick -> org.springframework.http.codec.ServerSentEvent
-								.<com.viglet.turing.persistence.dto.agent.TurChatSessionSlotsDeltaDto>builder().comment("heartbeat").build());
+								.<com.viglet.turing.persistence.dto.agent.TurChatSessionSlotsDeltaDto>builder().comment(HEARTBEAT).build());
 		// T90 — same refcounting as the snapshot stream, on the DELTA channel.
 		return Flux.merge(data, heartbeats)
 				.doOnSubscribe(s -> slotSseRegistry.acquire(conversationId,
 						com.viglet.turing.service.chatslots.TurChatSlotSseRegistry.Mode.DELTA))
 				.doFinally(sig -> slotSseRegistry.release(conversationId,
 						com.viglet.turing.service.chatslots.TurChatSlotSseRegistry.Mode.DELTA));
+	}
+
+	/**
+	 * T445 / §XXIII.4 — ambient / proactive copilot stream. Opt-in per agent
+	 * ({@code proactiveEnabled}); when off the stream is empty. Subscribes to the
+	 * conversation's slot bus and runs each post-write slot map through
+	 * {@link com.viglet.turing.service.chatslots.TurProactiveCopilotService}: when
+	 * an ambient signal ({@code signal.<kind>} slot) crosses the agent's threshold
+	 * it pushes ONE throttled proactive offer. The host writes those signal slots
+	 * from real interactions (clicks/dwell/opened facets) via the existing
+	 * {@code /chat/slots} endpoint. Same 25s heartbeat + single-node caveat as the
+	 * slot streams.
+	 *
+	 * @since 2026.3.4
+	 */
+	@GetMapping(value = "/proactive/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+	public Flux<org.springframework.http.codec.ServerSentEvent<com.viglet.turing.service.chatslots.TurProactiveSuggestionDto>> streamProactive(
+			@PathVariable String siteName,
+			@RequestParam String conversationId) {
+		if (conversationId == null || conversationId.isBlank()) {
+			return Flux.empty();
+		}
+		TurAIAgent agent = turSNSearchProcess.getSNSite(siteName)
+				.map(site -> site.getTurSNSiteGenAi())
+				.map(genAi -> genAi == null ? null : genAi.getTurAIAgent())
+				.orElse(null);
+		if (agent == null || !agent.isProactiveEnabled()) {
+			// Not opted in — nothing to stream (the client closes/ignores it).
+			return Flux.empty();
+		}
+		final int threshold = agent.getProactiveThresholdSignals();
+		final long throttleMillis =
+				com.viglet.turing.service.chatslots.TurProactiveCopilotService.DEFAULT_THROTTLE_MILLIS;
+		final var state = proactiveCopilotService.newState();
+		TurChatSessionSlotsDto initial = chatFlowEngineService.listSlotsForConversation(conversationId);
+		Flux<org.springframework.http.codec.ServerSentEvent<com.viglet.turing.service.chatslots.TurProactiveSuggestionDto>> data =
+				Flux.concat(Flux.just(initial), slotEventBus.subscribe(conversationId))
+						.flatMap(snapshot -> proactiveCopilotService.evaluate(state, conversationId,
+								snapshot.slots(), threshold, throttleMillis, System.currentTimeMillis())
+								.map(Flux::just).orElseGet(Flux::empty))
+						.map(suggestion -> org.springframework.http.codec.ServerSentEvent
+								.<com.viglet.turing.service.chatslots.TurProactiveSuggestionDto>builder(suggestion)
+								.event("proactive-suggestion").build());
+		Flux<org.springframework.http.codec.ServerSentEvent<com.viglet.turing.service.chatslots.TurProactiveSuggestionDto>> heartbeats =
+				Flux.interval(java.time.Duration.ofSeconds(25))
+						.map(tick -> org.springframework.http.codec.ServerSentEvent
+								.<com.viglet.turing.service.chatslots.TurProactiveSuggestionDto>builder().comment(HEARTBEAT).build());
+		return Flux.merge(data, heartbeats);
 	}
 
 	/**
@@ -702,7 +895,7 @@ public class TurSNSiteGenAiAPI {
 		Flux<org.springframework.http.codec.ServerSentEvent<TurWorkspaceEvent>> heartbeats =
 				Flux.interval(java.time.Duration.ofSeconds(25))
 						.map(tick -> org.springframework.http.codec.ServerSentEvent
-								.<TurWorkspaceEvent>builder().comment("heartbeat").build());
+								.<TurWorkspaceEvent>builder().comment(HEARTBEAT).build());
 		// T90 — refcount this connection on the WORKSPACE channel so the admin
 		// debug surface reports it alongside the slot channels.
 		return Flux.merge(data, heartbeats)
@@ -737,34 +930,87 @@ public class TurSNSiteGenAiAPI {
 	public ChatSlotExtractResponse extractSlots(@PathVariable String siteName,
 			@RequestParam("file") org.springframework.web.multipart.MultipartFile file,
 			@RequestParam("conversationId") String conversationId,
-			@RequestParam(value = "slotNames", required = false) String slotNames) {
+			@RequestParam(value = "slotNames", required = false) String slotNames,
+			@RequestParam(value = "confidence", required = false, defaultValue = "false") boolean confidence,
+			@RequestParam(value = "nativeBinary", required = false, defaultValue = "false") boolean nativeBinary) {
+		assertUploadWithinCap(file);
 		return turSNSearchProcess.getSNSite(siteName)
 				.map(site -> {
 					TurSNSiteGenAi genAi = site.getTurSNSiteGenAi();
 					if (genAi == null || genAi.getTurAIAgent() == null) {
-						return new ChatSlotExtractResponse(java.util.Map.of(), 0, 0,
+						return ChatSlotExtractResponse.error(
 								"No AI agent configured for site '" + siteName + "'");
 					}
 					TurAIAgent agent = genAi.getTurAIAgent();
-					java.util.List<String> requested = (slotNames == null || slotNames.isBlank())
-							? java.util.List.of()
-							: java.util.Arrays.stream(slotNames.split(","))
-									.map(String::trim).filter(s -> !s.isEmpty())
-									.toList();
 					SlotExtractionResult result = slotExtractionService.extract(
-							file, agent, conversationId, requested);
-					return new ChatSlotExtractResponse(result.extracted(),
-							result.slotsWritten(), result.extractedTextChars(), null);
+							file, agent, conversationId, parseSlotNames(slotNames), confidence, nativeBinary);
+					return ChatSlotExtractResponse.from(result);
 				})
-				.orElseGet(() -> new ChatSlotExtractResponse(java.util.Map.of(), 0, 0,
-						"Site not found: " + siteName));
+				.orElseGet(() -> ChatSlotExtractResponse.error("Site not found: " + siteName));
+	}
+
+	private static java.util.List<String> parseSlotNames(String slotNames) {
+		return (slotNames == null || slotNames.isBlank())
+				? java.util.List.of()
+				: java.util.Arrays.stream(slotNames.split(","))
+						.map(String::trim).filter(s -> !s.isEmpty())
+						.toList();
 	}
 
 	public record ChatSlotExtractResponse(
 			java.util.Map<String, String> extracted,
 			int slotsWritten,
 			int extractedTextChars,
+			java.util.Map<String, Double> confidences,
 			String error) {
+
+		static ChatSlotExtractResponse error(String message) {
+			return new ChatSlotExtractResponse(java.util.Map.of(), 0, 0, java.util.Map.of(), message);
+		}
+
+		static ChatSlotExtractResponse from(SlotExtractionResult result) {
+			return new ChatSlotExtractResponse(result.extracted(), result.slotsWritten(),
+					result.extractedTextChars(), result.confidences(), null);
+		}
+	}
+
+	/**
+	 * Multi-document extraction (T101). Same contract as {@code /slot-extract}
+	 * but accepts several files in one request and asks the agent's LLM to
+	 * reason <em>across</em> them — the headline use case is uploading a CV plus
+	 * a job description so the model can fill a synthesised {@code skill_gap}
+	 * slot. Text documents are concatenated under delimiters; image documents
+	 * are attached as vision media. A single file behaves exactly like
+	 * {@code /slot-extract}.
+	 *
+	 * <p>Unauthenticated, same posture as the rest of
+	 * {@code /api/sn/{site}/chat/*}.
+	 *
+	 * @since 2026.3.1
+	 */
+	@PostMapping(value = "/slot-extract-multi", consumes = "multipart/form-data")
+	public ChatSlotExtractResponse extractSlotsMulti(@PathVariable String siteName,
+			@RequestParam("files") java.util.List<org.springframework.web.multipart.MultipartFile> files,
+			@RequestParam("conversationId") String conversationId,
+			@RequestParam(value = "slotNames", required = false) String slotNames,
+			@RequestParam(value = "confidence", required = false, defaultValue = "false") boolean confidence,
+			@RequestParam(value = "nativeBinary", required = false, defaultValue = "false") boolean nativeBinary) {
+		if (files != null) {
+			files.forEach(this::assertUploadWithinCap);
+		}
+		return turSNSearchProcess.getSNSite(siteName)
+				.map(site -> {
+					TurSNSiteGenAi genAi = site.getTurSNSiteGenAi();
+					if (genAi == null || genAi.getTurAIAgent() == null) {
+						return ChatSlotExtractResponse.error(
+								"No AI agent configured for site '" + siteName + "'");
+					}
+					TurAIAgent agent = genAi.getTurAIAgent();
+					SlotExtractionResult result = slotExtractionService.extractMulti(
+							files, agent, conversationId, parseSlotNames(slotNames), confidence, nativeBinary);
+					return ChatSlotExtractResponse.from(result);
+				})
+				.orElseGet(() -> ChatSlotExtractResponse.error("Site not found: " + siteName));
 	}
 
 	/**
@@ -792,6 +1038,7 @@ public class TurSNSiteGenAiAPI {
 			@RequestParam("slotName") String slotName,
 			@RequestParam(value = "vision", required = false, defaultValue = "false") boolean vision,
 			@RequestParam(value = "visionSlotNames", required = false) String visionSlotNames) {
+		assertUploadWithinCap(file);
 		return turSNSearchProcess.getSNSite(siteName)
 				.map(site -> {
 					TurSNSiteGenAi genAi = site.getTurSNSiteGenAi();
@@ -950,8 +1197,15 @@ public class TurSNSiteGenAiAPI {
 			String sessionCookieName, long sessionTtlSeconds) {
 	}
 
+	/**
+	 * T633 / §XXVII.4 — {@code personaId} is an optional per-request persona
+	 * override for the anonymous public SN chat ("same question, different
+	 * eyes"). It is validated downstream against the effective agent's persona
+	 * catalog (unknown → the agent's default persona, never an arbitrary one);
+	 * null keeps the pre-T633 behaviour.
+	 */
 	public record ConversationRequest(List<ConversationMessage> messages, String locale,
 			java.util.Map<String, List<String>> filters,
-			String conversationId, String flowId, String forcedVariant) {
+			String conversationId, String flowId, String forcedVariant, String personaId) {
 	}
 }

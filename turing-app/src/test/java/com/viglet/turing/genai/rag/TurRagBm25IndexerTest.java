@@ -126,11 +126,12 @@ class TurRagBm25IndexerTest {
         List<Map<String, Object>> sent = captor.getValue();
         assertThat(sent).hasSize(1);
         Map<String, Object> doc = sent.get(0);
-        assertThat(doc).containsEntry(TurRagBm25Indexer.FIELD_ID, "c1");
-        assertThat(doc).containsEntry(TurRagBm25Indexer.FIELD_CONTENT, "conteúdo");
-        assertThat(doc).containsEntry(TurRagBm25Indexer.FIELD_ASSET_ID, "report.pdf");
-        assertThat(doc).containsEntry(TurRagBm25Indexer.FIELD_CHUNK_INDEX, 5);
-        assertThat(doc).containsEntry(TurRagBm25Indexer.FIELD_SOURCE_FILE, "report.pdf");
+        assertThat(doc)
+                .containsEntry(TurRagBm25Indexer.FIELD_ID, "c1")
+                .containsEntry(TurRagBm25Indexer.FIELD_CONTENT, "conteúdo")
+                .containsEntry(TurRagBm25Indexer.FIELD_ASSET_ID, "report.pdf")
+                .containsEntry(TurRagBm25Indexer.FIELD_CHUNK_INDEX, 5)
+                .containsEntry(TurRagBm25Indexer.FIELD_SOURCE_FILE, "report.pdf");
     }
 
     @Test
@@ -174,8 +175,8 @@ class TurRagBm25IndexerTest {
     @Test
     void indexChunks_corePending_throws() {
         core.setStatus(TurRagBm25Core.Status.NOT_PROVISIONED);
-        assertThatThrownBy(() -> indexer.indexChunks(core,
-                List.of(chunkWithMetadata("c1", "x", Map.of()))))
+        var chunks = List.of(chunkWithMetadata("c1", "x", Map.of()));
+        assertThatThrownBy(() -> indexer.indexChunks(core, chunks))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("NOT_PROVISIONED");
     }
